@@ -1,0 +1,7 @@
+onnx
+transformers
+langchain
+langchain_openai
+optimum
+torch
+sentence_transformers
