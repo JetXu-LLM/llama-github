@@ -4,6 +4,8 @@
 from initial_load import LLMManager
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from llama_github.config.config import Config
+from llama_github.logger import logger
 
 class LLMHandler:
     def __init__(self):
@@ -25,11 +27,7 @@ class LLMHandler:
         if (self.llm_manager.model_type == "OpenAI"):
             # Define a prompt template
             prompt = ChatPromptTemplate.from_messages([
-                ("system", "You are a highly intelligent assistant with expertise in GitHub repositories and coding practices. \
-Your task is to analyze questions related to GitHub projects, coding issues, or programming concepts. \
-Using your extensive knowledge base, you will provide detailed, accurate, and contextually relevant answers. \
-You have the ability to understand complex coding queries, retrieve pertinent information from GitHub repositories, and augment this data with your advanced reasoning capabilities. \
-Your responses should guide developers towards solving their problems, understanding new concepts, or finding the information they seek related to GitHub projects and software development."),
+                ("system", Config().get("general_prompt")),
                 ("user", "{input}")
             ])
             # Define an output parser

@@ -6,6 +6,7 @@ from github import GithubException
 from threading import Lock, Event, Thread
 from datetime import datetime, timezone
 import time
+from llama_github.logger import logger
 
 class Repository:
     def __init__(self, full_name, github_instance, **kwargs):
@@ -73,7 +74,7 @@ class Repository:
                         readme = self.repo.get_readme()
                         self._readme = readme.decoded_content.decode("utf-8")
                     except GithubException as e:
-                        print(f"Error getting README for repository {self.full_name}: {e}")
+                        logger.exception(f"Error getting README for repository {self.full_name}:")
                         self._readme = None
         self.update_last_read_time()
         return self._readme
@@ -86,7 +87,6 @@ class Repository:
             with self._repo_lock:  # Locking for write action
                 if self.repo is None:
                     try:
-                        print(f"Fetching repository '{self.full_name}'...")
                         self.repo = self._github.get_repo(self.full_name)
                         self.id = self.repo.id
                         self.name = self.repo.name
@@ -97,7 +97,7 @@ class Repository:
                         self.language = self.repo.language
                         self.default_branch = self.repo.default_branch
                     except GithubException as e:
-                        print(f"Error retrieving repository '{self.full_name}': {e}")
+                        logger.exception(f"Error retrieving repository '{self.full_name}':")
                         return None
         self.update_last_read_time()
         return self.repo
@@ -112,7 +112,7 @@ class Repository:
                     try:
                         self._structure = self._github.get_repo_structure(self.full_name, self.default_branch)
                     except GithubException as e:
-                        print(f"Error getting structure for repository {self.full_name}: {e}")
+                        logger.exception(f"Error getting structure for repository {self.full_name}:")
                         self._structure = None
 
         self.update_last_read_time()
@@ -129,7 +129,7 @@ class Repository:
                         file_content = self.repo.get_contents(file_path)
                         self._file_contents[file_path] = file_content.decoded_content.decode("utf-8")
                     except GithubException as e:
-                        print(f"Error getting file content for {file_path} in repository {self.full_name}: {e}")
+                        logger.exception(f"Error getting file content for {file_path} in repository {self.full_name}:")
                         return None
         self.update_last_read_time()
         return self._file_contents[file_path]

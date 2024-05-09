@@ -10,6 +10,7 @@
 from github import Github, GithubIntegration
 import requests
 import json
+from llama_github.logger import logger
 
 class GitHubAuthManager:
     def __init__(self):

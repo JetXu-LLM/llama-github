@@ -3,6 +3,8 @@ from threading import Lock
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import torch
+from llama_github.config.config import Config
+from llama_github.logger import logger
 
 class LLMManager:
     _instance_lock = Lock()
@@ -16,7 +18,7 @@ class LLMManager:
         return cls._instance
 
     def __init__(self, openai_api_key, huggingface_token, open_source_models_hg_dir, 
-                 embedding_model="jinaai/jina-embeddings-v2-base-code", rerank_model="jinaai/jina-reranker-v1-turbo-en", llm=None):
+                 embedding_model=Config().get("default_embedding"), rerank_model=Config().get("default_reranker"), llm=None):
         # Initialize for OpenAI GPT-4
         if llm is not None:
             self.llm = llm

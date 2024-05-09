@@ -1,6 +1,7 @@
 from github import Github, GithubException
 from .github_entities import Repository, RepositoryPool
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from llama_github.logger import logger
 
 class GitHubAPIHandler:
     def __init__(self, github_instance):
@@ -43,7 +44,7 @@ class GitHubAPIHandler:
                 ) for repo in repositories[:50]
             ]
         except GithubException as e:
-            print(f"Error searching repositories with query '{query}': {e}")
+            logger.exception(f"Error searching repositories with query '{query}':")
             return None
 
     def get_repository(self, full_repo_name):
@@ -84,10 +85,6 @@ class GitHubAPIHandler:
             
             # Perform the search
             code_results = self._github.search_code(query=query)
-            print(code_results, "\n")
-            print(code_results[0], "\n")
-            print(code_results[1], "\n")
-            print(code_results[2])
             code_results = list(code_results[:20]) # Limit to the first 40 results
             
             results_with_index = []
@@ -114,8 +111,8 @@ class GitHubAPIHandler:
                                     'description': repository_obj.description,
                                 }
                             })
-                    except Exception as exc:
-                        print(f"{code_result.sha} generated an exception: {exc}")
+                    except Exception as e:
+                        logger.exception(f"{code_result.name} generated an exception:")
 
             # Sort the results by index to maintain the original order
             sorted_results = sorted(results_with_index, key=lambda x: x['index'])
@@ -124,6 +121,6 @@ class GitHubAPIHandler:
 
             return final_results
         except GithubException as e:
-            print(f"Error searching code with query '{query}': {e}")
+            logger.exception(f"Error searching code with query '{query}':")
             return None
 
