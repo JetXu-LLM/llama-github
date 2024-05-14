@@ -168,17 +168,19 @@ class RepositoryPool:
         return cls._instance
 
     def __init__(self, github_instance, cleanup_interval=3600, max_idle_time=86400):
-        if not hasattr(self, 'initialized'):  # Prevent re-initialization
-            self.initialized = True
-            self._locks_registry = {}  # A registry for repository-specific locks
-            self._registry_lock = Lock()  # A lock to protect the locks registry
-            self._pool = {}  # The repository pool
-            self.github_instance = github_instance
-            self.cleanup_interval = cleanup_interval  # How often to run cleanup in seconds
-            self.max_idle_time = max_idle_time  # Maximum idle time in seconds
-            self._cleanup_thread = Thread(target=self._cleanup, daemon=True)
-            self._stop_event = Event()
-            self._cleanup_thread.start()
+        if not hasattr(self, 'initialized'): 
+            with self._instance_lock:   # Prevent re-initialization
+                if not hasattr(self, 'initialized'):
+                    self.initialized = True
+                    self._locks_registry = {}  # A registry for repository-specific locks
+                    self._registry_lock = Lock()  # A lock to protect the locks registry
+                    self._pool = {}  # The repository pool
+                    self.github_instance = github_instance
+                    self.cleanup_interval = cleanup_interval  # How often to run cleanup in seconds
+                    self.max_idle_time = max_idle_time  # Maximum idle time in seconds
+                    self._cleanup_thread = Thread(target=self._cleanup, daemon=True)
+                    self._stop_event = Event()
+                    self._cleanup_thread.start()
     
     def _cleanup(self): # Internal method for cleaning up idle repository objects' cache content, not real delete repository objects
         """Periodically checks and removes idle repository objects."""
