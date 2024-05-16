@@ -1,0 +1,16 @@
+title = "gitleaks config"
+
+[[rules]]
+description = "OpenAI API Key"
+regex = '''sk-[a-zA-Z0-9]{32}'''
+tags = ["apikey"]
+
+[[rules]]
+description = "Hugging Face Token"
+regex = '''hf_[a-zA-Z0-9]{40}'''
+tags = ["apikey"]
+
+[[rules]]
+description = "GitHub Token"
+regex = '''ghp_[a-zA-Z0-9]{36}'''
+tags = ["apikey"]
