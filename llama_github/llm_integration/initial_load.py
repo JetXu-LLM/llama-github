@@ -6,6 +6,7 @@ from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 import torch
 from llama_github.config.config import Config
 from llama_github.logger import logger
+from typing import Optional
 
 class LLMManager:
     _instance_lock = Lock()
@@ -22,8 +23,8 @@ class LLMManager:
                     cls._instance = super(LLMManager, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, openai_api_key="", huggingface_token="", open_source_models_hg_dir="", 
-                 embedding_model=Config().get("default_embedding"), rerank_model=Config().get("default_reranker"), llm=None):
+    def __init__(self, openai_api_key: Optional[str] = None, huggingface_token: Optional[str] = None, open_source_models_hg_dir: Optional[str] = None, 
+                 embedding_model=Config().get("default_embedding"), rerank_model=Config().get("default_reranker"), llm = None):
         with self._instance_lock:   # Prevent re-initialization
             if self._initialized:
                 return

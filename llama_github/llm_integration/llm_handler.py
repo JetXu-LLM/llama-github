@@ -9,9 +9,10 @@ from llama_github.config.config import Config
 from llama_github.logger import logger
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.pydantic_v1 import BaseModel
+from typing import Optional
 
 class LLMHandler:
-    def __init__(self):
+    def __init__(self, llm_manager: Optional[LLMManager] = None):
         """
         Initializes the LLMHandler class which is responsible for handling the interaction
         with a language model (LLM) using the LangChain framework.
@@ -19,9 +20,12 @@ class LLMHandler:
         Attributes:
             llm_manager (LLMManager): Manages interactions with the language model.
         """
-        self.llm_manager = LLMManager()
+        if llm_manager is not None:
+            self.llm_manager = llm_manager
+        else:
+            self.llm_manager = LLMManager()
 
-    async def invoke(self, human_question: str, chat_history: list[str] = None, context: list[str] = None, output_structure: BaseModel=None, prompt: str = Config().get("general_prompt")) -> str:
+    async def invoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel]=None, prompt: str = Config().get("general_prompt")) -> str:
         """
         Asynchronously invokes the language model with a given question, chat history, and context,
         and returns the model's response.

@@ -7,9 +7,10 @@ from threading import Lock, Event, Thread
 from datetime import datetime, timezone
 import time
 from llama_github.logger import logger
+from llama_github.github_integration.github_auth_manager import ExtendedGithub
 
 class Repository:
-    def __init__(self, full_name, github_instance, **kwargs):
+    def __init__(self, full_name, github_instance: ExtendedGithub, **kwargs):
         """
         Initializes a Repository instance with details and a GitHub instance for API calls.
 

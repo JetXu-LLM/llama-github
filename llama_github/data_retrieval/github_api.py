@@ -2,9 +2,10 @@ from github import Github, GithubException
 from .github_entities import Repository, RepositoryPool
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from llama_github.logger import logger
+from llama_github.github_integration.github_auth_manager import ExtendedGithub
 
 class GitHubAPIHandler:
-    def __init__(self, github_instance):
+    def __init__(self, github_instance: ExtendedGithub):
         """
         Initializes the GitHubAPIHandler with a GitHub instance.
 
