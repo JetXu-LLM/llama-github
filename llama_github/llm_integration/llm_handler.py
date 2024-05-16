@@ -10,6 +10,7 @@ from llama_github.logger import logger
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.pydantic_v1 import BaseModel
 from typing import Optional
+from langchain_openai import output_parsers
 
 class LLMHandler:
     def __init__(self, llm_manager: Optional[LLMManager] = None):
@@ -25,7 +26,7 @@ class LLMHandler:
         else:
             self.llm_manager = LLMManager()
 
-    async def invoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel]=None, prompt: str = Config().get("general_prompt")) -> str:
+    async def ainvoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel]=None, prompt: str = Config().get("general_prompt")) -> str:
         """
         Asynchronously invokes the language model with a given question, chat history, and context,
         and returns the model's response.
@@ -49,9 +50,6 @@ class LLMHandler:
         try:
             llm = self.llm_manager.get_llm()
             if self.llm_manager.model_type == "OpenAI":
-                # Define an output parser to interpret the model's raw output.
-                output_parser = StrOutputParser()
-
                 # Create a prompt template with placeholders for dynamic content.
                 prompt_template = ChatMessagePromptTemplate.from_template(role="system", template=prompt)
                 chat_prompt = ChatPromptTemplate.from_messages([
@@ -77,9 +75,9 @@ class LLMHandler:
 
                 # Determine the processing chain based on the presence of an output structure.
                 if output_structure is not None:
-                    chain = chat_prompt | llm.with_structured_output(output_structure) | output_parser
+                    chain = chat_prompt | llm.with_structured_output(output_structure)
                 else:
-                    chain = chat_prompt | llm | output_parser
+                    chain = chat_prompt | llm
 
                 # Invoke the chain and return the model's response.
                 response = await chain.ainvoke(formatted_prompt.to_messages())

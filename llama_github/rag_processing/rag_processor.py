@@ -25,8 +25,8 @@ class RAGProcessor:
             str: the answer of question.
         """
         prompt = Config().get("always_answer_prompt")
-        response = await self.llm_handler.invoke(human_question=query, prompt=prompt)
-        return response
+        response = await self.llm_handler.ainvoke(human_question=query, prompt=prompt)
+        return response.content
     
     class _GitHubCodeSearchCriteria(BaseModel):
         search_criteria: List[str] = Field(
@@ -48,5 +48,5 @@ class RAGProcessor:
             str[]: the search criteria for Github code search.
         """
         prompt = Config().get("code_search_criteria_prompt")
-        response = await self.llm_handler.invoke(human_question=query, prompt=prompt, output_structure=self._GitHubCodeSearchCriteria)
-        return response
+        response = await self.llm_handler.ainvoke(human_question=query, prompt=prompt, output_structure=self._GitHubCodeSearchCriteria)
+        return response.search_criteria
