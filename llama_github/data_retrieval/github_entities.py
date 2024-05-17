@@ -103,7 +103,7 @@ class Repository:
         self.update_last_read_time()
         return self.repo
 
-    def get_structure(self, path="/"):
+    def get_structure(self, path="/") -> dict:
         """
         Retrieves the structure of the repository using a singleton design pattern.
         """
@@ -119,7 +119,7 @@ class Repository:
         self.update_last_read_time()
         return self._structure
 
-    def get_file_content(self, file_path):
+    def get_file_content(self, file_path) -> str:
         """
         Retrieves the content of a file using a singleton design pattern.
         """
@@ -208,7 +208,7 @@ class RepositoryPool:
                 self._locks_registry[full_name] = Lock() # Create a new lock for the repository creation
             return self._locks_registry[full_name]
 
-    def get_repository(self, full_name, **kwargs):
+    def get_repository(self, full_name, **kwargs) -> Repository:
         """Retrieve a repository from the pool or create a new one if it doesn't exist."""
         if full_name in self._pool:
             return self._pool[full_name]

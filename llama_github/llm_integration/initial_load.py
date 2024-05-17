@@ -4,9 +4,9 @@ from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 import torch
-from llama_github.config.config import Config
+from llama_github.config.config import config
 from llama_github.logger import logger
-from typing import Optional
+from typing import Optional, Any
 
 class LLMManager:
     _instance_lock = Lock()
@@ -23,8 +23,13 @@ class LLMManager:
                     cls._instance = super(LLMManager, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, openai_api_key: Optional[str] = None, huggingface_token: Optional[str] = None, open_source_models_hg_dir: Optional[str] = None, 
-                 embedding_model=Config().get("default_embedding"), rerank_model=Config().get("default_reranker"), llm = None):
+    def __init__(self, 
+                 openai_api_key: Optional[str] = None,
+                 huggingface_token: Optional[str] = None,
+                 open_source_models_hg_dir: Optional[str] = None,
+                 embedding_model: Optional[str] =config.get("default_embedding"),
+                 rerank_model: Optional[str] =config.get("default_reranker"),
+                 llm: Any = None):
         with self._instance_lock:   # Prevent re-initialization
             if self._initialized:
                 return
@@ -35,10 +40,12 @@ class LLMManager:
             self.llm = llm
             self.model_type = "Custom_langchain_llm"
         elif openai_api_key is not None and openai_api_key != "" and self.llm is None:
+            logger.info("Initializing OpenAI API...")
             self.llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4o")
             self.model_type = "OpenAI"
         # Initialize for Open Source Models
         elif open_source_models_hg_dir is not None and open_source_models_hg_dir != "" and self.llm is None:
+            logger.info(f"Initializing {open_source_models_hg_dir}...")
             #load hugingface models
             self.model_type = "Hubgingface"
         elif self.llm is None:
@@ -58,6 +65,7 @@ class LLMManager:
             if (huggingface_token is not None and huggingface_token != ""):
                 model_kwargs['token'] = huggingface_token
             encode_kwargs = {'normalize_embeddings': True}
+            logger.info(f"Initializing {embedding_model}...")
             self.embedding_model = HuggingFaceEmbeddings(
                 model_name=embedding_model,
                 model_kwargs=model_kwargs,
@@ -66,6 +74,7 @@ class LLMManager:
         #initial rerank_model
         if self.rerank_model is None:
             model_kwargs = {'device': device, 'trust_remote_code':True}
+            logger.info(f"Initializing {rerank_model}...")
             self.rerank_model = HuggingFaceCrossEncoder(
                 model_name=rerank_model,
                 model_kwargs=model_kwargs,

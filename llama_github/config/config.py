@@ -26,3 +26,5 @@ class Config(metaclass=SingletonMeta):
         if cls._config is None:
             cls()
         return cls._config.get(key, default)
+
+config = Config()

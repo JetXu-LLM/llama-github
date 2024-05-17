@@ -5,7 +5,7 @@
 from llama_github.llm_integration.initial_load import LLMManager
 from langchain_core.prompts import ChatPromptTemplate, ChatMessagePromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-from llama_github.config.config import Config
+from llama_github.config.config import config
 from llama_github.logger import logger
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.pydantic_v1 import BaseModel
@@ -26,7 +26,7 @@ class LLMHandler:
         else:
             self.llm_manager = LLMManager()
 
-    async def ainvoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel]=None, prompt: str = Config().get("general_prompt")) -> str:
+    async def ainvoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel]=None, prompt: str = config.get("general_prompt")) -> str:
         """
         Asynchronously invokes the language model with a given question, chat history, and context,
         and returns the model's response.

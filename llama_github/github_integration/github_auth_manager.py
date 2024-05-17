@@ -9,7 +9,6 @@
 
 from github import Github, GithubIntegration
 import requests
-import json
 from llama_github.logger import logger
 
 class GitHubAuthManager:
@@ -56,7 +55,7 @@ class ExtendedGithub(Github):
         self.access_token = login_or_token
         super().__init__(login_or_token=login_or_token)
     
-    def get_repo_structure(self, repo_full_name, branch='main'):
+    def get_repo_structure(self, repo_full_name, branch='main') -> dict:
         """
         Get the structure of a repository (files and directories) recursively.
         """
@@ -101,7 +100,7 @@ class ExtendedGithub(Github):
             tree_data = tree_response.json()
             # Convert the flat list of items to a hierarchical tree structure
             repo_structure = list_to_tree(tree_data['tree'])
-            return json.dumps(repo_structure, indent=4)
+            return repo_structure
         else:
             print(f"Error fetching tree structure: {tree_response.status_code}")
             print("Details:", tree_response.json())
