@@ -3,6 +3,7 @@ from .github_entities import Repository, RepositoryPool
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from llama_github.logger import logger
 from llama_github.github_integration.github_auth_manager import ExtendedGithub
+from llama_github.config.config import config
 
 class GitHubAPIHandler:
     def __init__(self, github_instance: ExtendedGithub):
@@ -80,16 +81,25 @@ class GitHubAPIHandler:
         :return: A list of code search results or None if an error occurs.
         """
         try:
+            logger.debug(f"Searching code with query '{query}'...")
             # If a repository full name is provided, include it in the query
             if repo_full_name:
                 query = f"{query} repo:{repo_full_name}"
             
             # Perform the search
             code_results = self._github.search_code(query=query)
-            code_results = list(code_results[:20]) # Limit to the first 40 results
+            total_count = code_results.totalCount
+            code_results = list(code_results[:min(config.get("code_search_max_hits"), total_count)]) # Limit to the first code_search_max_hits results
+            #filter search results by stars
+            code_results = [
+                code_result
+                for index, code_result in enumerate(code_results)
+                if code_result.repository.stargazers_count + config.get("code_search_max_hits") - index >= config.get("min_stars_to_keep_result")
+            ]
+            logger.debug(f"Retrieved {len(code_results)} code search results.")
             
             results_with_index = []
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=config.get("max_workers")) as executor:
                 # Concurrently fetch the file content for each code search result
                 future_to_index = {executor.submit(self._get_file_content_through_repository, code_result): index for index, code_result in enumerate(code_results)}
                 for future in as_completed(future_to_index):
@@ -100,27 +110,23 @@ class GitHubAPIHandler:
                         if repository_obj and file_content:
                             results_with_index.append({
                                 'index': index,
-                                'data': {
-                                    'name': code_result.name,
-                                    'path': code_result.path,
-                                    'repository_full_name': code_result.repository.full_name,
-                                    'url': code_result.url,
-                                    'content': file_content,
-                                    'stargazers_count': repository_obj.stargazers_count,
-                                    'watchers_count': repository_obj.watchers_count,
-                                    'language': repository_obj.language,
-                                    'description': repository_obj.description,
-                                }
+                                'name': code_result.name,
+                                'path': code_result.path,
+                                'repository_full_name': code_result.repository.full_name,
+                                'url': code_result.url,
+                                'content': file_content,
+                                'stargazers_count': repository_obj.stargazers_count,
+                                'watchers_count': repository_obj.watchers_count,
+                                'language': repository_obj.language,
+                                'description': repository_obj.description,
                             })
                     except Exception as e:
                         logger.exception(f"{code_result.name} generated an exception:")
 
             # Sort the results by index to maintain the original order
             sorted_results = sorted(results_with_index, key=lambda x: x['index'])
-            # Extract the data from the sorted results
-            final_results = [item['data'] for item in sorted_results]
-
-            return final_results
+            logger.debug(f"Code search retrieved successfully with {len(sorted_results)} results.")
+            return sorted_results
         except GithubException as e:
             logger.exception(f"Error searching code with query '{query}':")
             return None

@@ -41,7 +41,7 @@ class LLMManager:
             self.model_type = "Custom_langchain_llm"
         elif openai_api_key is not None and openai_api_key != "" and self.llm is None:
             logger.info("Initializing OpenAI API...")
-            self.llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4o")
+            self.llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4-turbo")
             self.model_type = "OpenAI"
         # Initialize for Open Source Models
         elif open_source_models_hg_dir is not None and open_source_models_hg_dir != "" and self.llm is None:
