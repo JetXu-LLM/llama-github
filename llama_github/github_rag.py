@@ -1,8 +1,8 @@
 from llama_github.logger import logger
 from llama_github.config.config import config
-from typing import Optional, Any
+from typing import List, Optional, Any
 from dataclasses import dataclass
-import json
+from pprint import pformat
 
 from llama_github.llm_integration.initial_load import LLMManager
 from llama_github.llm_integration.llm_handler import LLMHandler
@@ -14,12 +14,15 @@ from llama_github.data_retrieval.github_entities import Repository, RepositoryPo
 
 import asyncio
 from IPython import get_ipython
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 @dataclass
 class GitHubAppCredentials:
     app_id: int
     private_key: str
     installation_id: int
+
 
 class GithubRAG:
     rag_processor: RAGProcessor = None
@@ -29,8 +32,9 @@ class GithubRAG:
                  openai_api_key: Optional[str] = None,
                  huggingface_token: Optional[str] = None,
                  open_source_models_hg_dir: Optional[str] = None,
-                 embedding_model: Optional[str] =config.get("default_embedding"),
-                 rerank_model: Optional[str] =config.get("default_reranker"),
+                 embedding_model: Optional[str] = config.get(
+                     "default_embedding"),
+                 rerank_model: Optional[str] = config.get("default_reranker"),
                  llm: Any = None,
                  **kwargs) -> None:
         """
@@ -55,13 +59,14 @@ class GithubRAG:
         try:
             logger.info("Initializing GithubRAG...")
             logger.debug("Initializing Github Instance...")
-            self.loop = asyncio.get_event_loop()
 
             self.auth_manager = GitHubAuthManager()
             if github_access_token:
-                self.github_instance = self.auth_manager.authenticate_with_token(github_access_token)
+                self.github_instance = self.auth_manager.authenticate_with_token(
+                    github_access_token)
             elif github_app_credentials:
-                self.github_instance = self.auth_manager.authenticate_with_app(github_app_credentials.app_id, github_app_credentials.private_key, github_app_credentials.installation_id)
+                self.github_instance = self.auth_manager.authenticate_with_app(
+                    github_app_credentials.app_id, github_app_credentials.private_key, github_app_credentials.installation_id)
             else:
                 logger.error("GitHub credentials not provided.")
             logger.debug("Github Instance Initialized.")
@@ -71,21 +76,75 @@ class GithubRAG:
                 "repo_cleanup_interval": "cleanup_interval",
                 "repo_max_idle_time": "max_idle_time"
             }
-            repo_pool_kwargs = {param_mapping[k]: v for k, v in kwargs.items() if k in param_mapping}
-            self.RepositoryPool = RepositoryPool(self.github_instance, **repo_pool_kwargs)
+            repo_pool_kwargs = {
+                param_mapping[k]: v for k, v in kwargs.items() if k in param_mapping}
+            self.RepositoryPool = RepositoryPool(
+                self.github_instance, **repo_pool_kwargs)
             self.github_api_handler = GitHubAPIHandler(self.github_instance)
             logger.debug("Repository Pool Initialized.")
 
-            logger.debug("Initializing llm manager, embedding model & reranker model...")
-            self.llm_manager = LLMManager(openai_api_key, huggingface_token, open_source_models_hg_dir, embedding_model, rerank_model, llm)
-            logger.debug("LLM Manager, Embedding model & Reranker model Initialized.")
+            logger.debug(
+                "Initializing llm manager, embedding model & reranker model...")
+            self.llm_manager = LLMManager(
+                openai_api_key, huggingface_token, open_source_models_hg_dir, embedding_model, rerank_model, llm)
+            logger.debug(
+                "LLM Manager, Embedding model & Reranker model Initialized.")
 
-            self.rag_processor = RAGProcessor(self.github_api_handler, self.llm_manager)
+            self.rag_processor = RAGProcessor(
+                self.github_api_handler, self.llm_manager)
         except Exception as e:
             logger.error(f"Error initializing GithubRAG: {e}")
             raise e
 
-    async def async_retrieve_context(self, query):
+    async def async_retrieve_context(self, query) -> List[str]:
+        # Implementation of the context retrieval process
+        # This will involve using the GitHub API to search for relevant information,
+        # augmenting the retrieved data through the RAG methodology, and
+        # enhancing it with LLM capabilities.
+
+        context_list = []  # This will be the list of context strings
+        try:
+            logger.info("Retrieving context...")
+            # Analyzing question and generating strategy
+            analyze_strategy = asyncio.create_task(
+                self.rag_processor.analyze_question(query))
+
+            # wait for generate analyze strategy
+            await analyze_strategy
+            analyzed_strategy = analyze_strategy.result()
+
+            # code search from GitHub
+            task_code_search = asyncio.create_task(
+                self.code_search_retrieval(query=analyzed_strategy[0], draft_answer=analyzed_strategy[1]+"\n\n"+analyzed_strategy[2]))
+            # issue search from GitHub
+            task_issue_search = asyncio.create_task(
+                self.issue_search_retrieval(query=analyzed_strategy[0], draft_answer=analyzed_strategy[1]+"\n\n"+analyzed_strategy[3]))
+            # repo search from GitHub
+            task_repo_search = asyncio.create_task(
+                self.repo_search_retrieval(query=analyzed_strategy[0]))
+
+            # wait for all tasks to complete
+            await asyncio.gather(task_code_search, task_issue_search, task_repo_search)
+            logger.debug(f"Analyze strategy: {analyzed_strategy}")
+            logger.debug(
+                f"Code search: {pformat(task_code_search.result()[:5], indent=4)}")
+            logger.debug(
+                f"Issue search: {pformat(task_issue_search.result()[:5], indent=4)}")
+            logger.debug(
+                f"Repo search: {pformat(task_repo_search.result()[:5], indent=4)}")
+
+            self.issue_search_result = task_issue_search.result()
+
+            context_list = self.rag_processor.arrange_context(
+                code_search_result=task_code_search.result(), issue_search_result=task_issue_search.result(), repo_search_result=task_repo_search.result())
+
+            logger.info("Context retrieved successfully.")
+        except Exception as e:
+            logger.error(f"Error retrieving context: {e}")
+            raise e
+        return context_list
+
+    def retrieve_context(self, query) -> List[str]:
         """
         Retrieve context from GitHub code, issue and repo search based on the input query.
 
@@ -95,56 +154,54 @@ class GithubRAG:
         Returns:
             List[str]: A list of context strings retrieved from the specified GitHub repositories.
         """
-        # Implementation of the context retrieval process
-        # This will involve using the GitHub API to search for relevant information,
-        # augmenting the retrieved data through the RAG methodology, and
-        # enhancing it with LLM capabilities.
-
-        context_list = []  # This will be the list of context strings
-        try:
-            logger.info("Retrieving context...")
-            # generate draft answer
-            task_draft_answer = self.rag_processor.first_genenral_answer(query)
-            # code search from GitHub
-            task_code_search = self.code_search_retrieval(query)
-            # issue search from GitHub
-            task_issue_search = self.issue_search_retrieval(query)
-            # repo search from GitHub
-            task_repo_search = self.repo_search_retrieval(query)
-            
-            # wait for all tasks to complete
-            await asyncio.gather(task_draft_answer, task_code_search, task_issue_search, task_repo_search)
-
-            logger.info("Context retrieved successfully.")
-        except Exception as e:
-            logger.error(f"Error retrieving context: {e}")
-            raise e
-        return context_list
-    
-    def retrieve_context(self, query):
+        self.loop = asyncio.get_event_loop()
         ipython = get_ipython()
         if ipython and ipython.has_trait('kernel'):
             logger.debug("Running in Jupyter notebook, nest_asyncio applied.")
             import nest_asyncio
             nest_asyncio.apply()
             return asyncio.run(self.async_retrieve_context(query))
-        
         if self.loop.is_running():
             return asyncio.ensure_future(self.async_retrieve_context(query))
-        else:
-            return asyncio.run(self.async_retrieve_context(query))
-    
-    async def code_search_retrieval(self, query):
+        return self.loop.run_until_complete(self.async_retrieve_context(query))
+
+    async def code_search_retrieval(self, query, draft_answer: Optional[str] = None):
         result = []
         try:
             logger.info("Retrieving code search...")
-            search_criterias = await self.rag_processor.get_code_search_criteria(query)
-            logger.debug(f"For {query}, the search_criterias for code search is: {search_criterias}")
+            search_criterias = await self.rag_processor.get_code_search_criteria(query, draft_answer)
             for search_criteria in search_criterias:
-                single_search_result = self.github_api_handler.search_code(search_criteria)
+                single_search_result = self.github_api_handler.search_code(
+                    search_criteria.replace('"', ''))
                 for d in single_search_result:
                     result.append(d)
-            #deduplicate results
+            # deduplicate results
+            seen = set()
+            unique_list = []
+            for d in result:
+                value = d["url"]
+                if value not in seen and d["stargazers_count"] + config.get("code_search_max_hits") - d["index"] >= config.get("min_stars_to_keep_result"):
+                    seen.add(value)
+                    unique_list.append(d)
+            result = unique_list
+
+            logger.info("Code search retrieved successfully.")
+        except Exception as e:
+            logger.error(f"Error retrieving code search: {e}")
+            raise e
+        return result
+
+    async def issue_search_retrieval(self, query, draft_answer: Optional[str] = None):
+        result = []
+        try:
+            logger.info("Retrieving issue search...")
+            search_criterias = await self.rag_processor.get_issue_search_criteria(query, draft_answer)
+            for search_criteria in search_criterias:
+                single_search_result = self.github_api_handler.search_issues(
+                    search_criteria.replace('"', ''))
+                for d in single_search_result:
+                    result.append(d)
+            # deduplicate results
             seen = set()
             unique_list = []
             for d in result:
@@ -153,15 +210,73 @@ class GithubRAG:
                     seen.add(value)
                     unique_list.append(d)
             result = unique_list
-            logger.debug(f"search results: {json.dumps(result, indent=4)}")
-            logger.info("Code search retrieved successfully.")
+
+            logger.info("Issue search retrieved successfully.")
         except Exception as e:
-            logger.error(f"Error retrieving code search: {e}")
+            logger.error(f"Error retrieving issue search: {e}")
             raise e
         return result
-    
-    async def issue_search_retrieval(self, query):
-        pass
 
-    async def repo_search_retrieval(self, query):
-        pass
+    def _get_repository_rag_info(self, repository: Repository):
+        """
+        Helper method to get file content through a Repository object.
+
+        :param code_search_result: A single code search result.
+        :return: Tuple containing the Repository object and the file content.
+        """
+        # Assuming RepositoryPool is accessible and initialized somewhere in this class
+        return repository.get_readme(), self.rag_processor.get_repo_simple_structure(repository)
+
+    async def repo_search_retrieval(self, query, draft_answer: Optional[str] = None):
+        result = []
+        results_with_index = []
+        try:
+            logger.info("Retrieving repo search...")
+            search_criterias = await self.rag_processor.get_repo_search_criteria(query, draft_answer)
+            for search_criteria in search_criterias:
+                single_search_result = self.github_api_handler.search_repositories(
+                    search_criteria.replace('"', ''))
+                for d in single_search_result:
+                    result.append(d)
+            # deduplicate results
+            seen = set()
+            unique_list = []
+            for d in result:
+                value = d.full_name
+                if value not in seen:
+                    seen.add(value)
+                    unique_list.append(d)
+            repositories = unique_list
+
+            with ThreadPoolExecutor(max_workers=config.get("max_workers")) as executor:
+                # Concurrently fetch the file content for each code search result
+                future_to_index = {executor.submit(
+                    self._get_repository_rag_info, repository): index for index, repository in enumerate(repositories)}
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    repository = repositories[index]
+                    try:
+                        repo_readme, repo_simple_structure = future.result()
+                        if repo_readme is None or repository.description is None or repository.description == "" or repo_simple_structure == "{}":
+                            continue
+                        if repo_readme:
+                            results_with_index.append({
+                                'index': index,
+                                'full_name': repository.full_name,
+                                'content': repo_readme,
+                            })
+                        # if repo_simple_structure:
+                        #     results_with_index.append({
+                        #         'index': index,
+                        #         'full_name': repository.full_name,
+                        #         'content': "The repository "+repository.full_name+" with description:" + repository.description+" has below repo simple structure:\n"+repo_simple_structure,
+                        #     })
+                    except Exception as e:
+                        logger.error(
+                            f"Error getting repository info: {e}")
+
+            logger.info("Repo search retrieved successfully.")
+        except Exception as e:
+            logger.error(f"Error retrieving repos search: {e}")
+            raise e
+        return results_with_index

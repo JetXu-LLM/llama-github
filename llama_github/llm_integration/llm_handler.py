@@ -12,12 +12,13 @@ from langchain_core.pydantic_v1 import BaseModel
 from typing import Optional
 from langchain_openai import output_parsers
 
+
 class LLMHandler:
     def __init__(self, llm_manager: Optional[LLMManager] = None):
         """
         Initializes the LLMHandler class which is responsible for handling the interaction
         with a language model (LLM) using the LangChain framework.
-        
+
         Attributes:
             llm_manager (LLMManager): Manages interactions with the language model.
         """
@@ -26,11 +27,11 @@ class LLMHandler:
         else:
             self.llm_manager = LLMManager()
 
-    async def ainvoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel]=None, prompt: str = config.get("general_prompt")) -> str:
+    async def ainvoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel] = None, prompt: str = config.get("general_prompt"), simple_llm=False) -> str:
         """
         Asynchronously invokes the language model with a given question, chat history, and context,
         and returns the model's response.
-        
+
         Parameters:
             human_question (str): The question or input from the human user.
             chat_history (list[str]): A list of strings representing the chat history, where each
@@ -48,19 +49,26 @@ class LLMHandler:
             str: The response from the language model.
         """
         try:
-            llm = self.llm_manager.get_llm()
+            if simple_llm and self.llm_manager.get_llm_simple() is not None:
+                llm = self.llm_manager.get_llm_simple()
+            else:
+                llm = self.llm_manager.get_llm()
             if self.llm_manager.model_type == "OpenAI":
                 # Create a prompt template with placeholders for dynamic content.
-                prompt_template = ChatMessagePromptTemplate.from_template(role="system", template=prompt)
+                prompt_template = ChatMessagePromptTemplate.from_template(
+                    role="system", template=prompt)
                 chat_prompt = ChatPromptTemplate.from_messages([
                     prompt_template,
-                    MessagesPlaceholder(variable_name="history_messages", optional=True),
+                    MessagesPlaceholder(
+                        variable_name="history_messages", optional=True),
                     MessagesPlaceholder(variable_name="human_message"),
-                    MessagesPlaceholder(variable_name="context_messages", optional=True)
+                    MessagesPlaceholder(
+                        variable_name="context_messages", optional=True)
                 ])
 
                 # Convert chat_history and context from [str] to their respective message types.
-                chat_history_messages = self._compose_context_messages(chat_history)
+                chat_history_messages = self._compose_context_messages(
+                    chat_history)
                 context_messages = self._compose_chat_history_messages(context)
                 human_question_message = HumanMessage(content=human_question)
 
@@ -72,18 +80,25 @@ class LLMHandler:
 
                 # Format the prompt with the provided parameters.
                 formatted_prompt = chat_prompt.format_prompt(**prompt_params)
-
+                logger.debug(f"Formatted prompt: {formatted_prompt}")
                 # Determine the processing chain based on the presence of an output structure.
                 if output_structure is not None:
-                    chain = chat_prompt | llm.with_structured_output(output_structure)
+                    chain = llm.with_structured_output(output_structure)
                 else:
-                    chain = chat_prompt | llm
+                    chain = llm
 
                 # Invoke the chain and return the model's response.
-                response = await chain.ainvoke(formatted_prompt.to_messages())
+                try:
+                    response = await chain.ainvoke(formatted_prompt.to_messages())
+                except Exception as e:
+                    logger.exception(
+                        f"Call llm with #{human_question}# generated an exception:{e}")
+                    if output_structure is not None:
+                        response = await chain.ainvoke(formatted_prompt.to_messages())
                 return response
         except Exception as e:
-            logger.exception(f"Call llm with #{human_question}# generated an exception:")
+            logger.exception(
+                f"Call llm with #{human_question}# generated an exception:{e}")
             return "An error occurred during processing."
 
     def _compose_chat_history_messages(self, chat_history: list[str]) -> list:

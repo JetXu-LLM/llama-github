@@ -1,9 +1,11 @@
-from github import Github, GithubException
+from github import GithubException
 from .github_entities import Repository, RepositoryPool
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from llama_github.logger import logger
 from llama_github.github_integration.github_auth_manager import ExtendedGithub
 from llama_github.config.config import config
+import re
+
 
 class GitHubAPIHandler:
     def __init__(self, github_instance: ExtendedGithub):
@@ -26,27 +28,35 @@ class GitHubAPIHandler:
         """
         try:
             if sort not in ['stars', 'forks', 'updated']:
-                repositories = self._github.search_repositories(query=query, order=order)
+                repositories = self._github.search_repositories(
+                    query=query, order=order)
             else:
-                repositories = self._github.search_repositories(query=query, sort=sort, order=order)
-            
-            return [
-                Repository(
-                    repo.full_name,
-                    self._github,
-                    **{
-                        'id': repo.id,
-                        'name': repo.name,
-                        'description': repo.description,
-                        'html_url': repo.html_url,
-                        'stargazers_count': repo.stargazers_count,
-                        'language': repo.language,
-                        'default_branch': repo.default_branch,
-                    }
-                ) for repo in repositories[:50]
-            ]
+                repositories = self._github.search_repositories(
+                    query=query, sort=sort, order=order)
+            result = []
+            for i, repo in enumerate(repositories):
+                if i >= config.get("repo_search_max_hits"):
+                    break
+                result.append(
+                    Repository(
+                        repo.full_name,
+                        self._github,
+                        **{
+                            'id': repo.id,
+                            'name': repo.name,
+                            'description': repo.description,
+                            'html_url': repo.html_url,
+                            'stargazers_count': repo.stargazers_count,
+                            'language': repo.language,
+                            'default_branch': repo.default_branch,
+                            'updated_at': repo.updated_at,
+                        }
+                    )
+                )
+            return result
         except GithubException as e:
-            logger.exception(f"Error searching repositories with query '{query}':")
+            logger.exception(
+                f"Error searching repositories with query '{query}':")
             return None
 
     def get_repository(self, full_repo_name):
@@ -57,27 +67,27 @@ class GitHubAPIHandler:
         :return: A Repository object or None if an error occurs.
         """
         return self.pool.get_repository(full_repo_name)
-    
+
     def _get_file_content_through_repository(self, code_search_result):
         """
         Helper method to get file content through a Repository object.
 
-        :param code_result: A single code search result.
+        :param code_search_result: A single code search result.
         :return: Tuple containing the Repository object and the file content.
         """
         # Assuming RepositoryPool is accessible and initialized somewhere in this class
-        repository_obj = self.get_repository(code_search_result.repository.full_name)
-        file_content = repository_obj.get_file_content(code_search_result.path)
+        repository_obj = self.get_repository(
+            code_search_result['repository']['full_name'])
+        file_content = repository_obj.get_file_content(
+            code_search_result['path'])
         return repository_obj, file_content
-        
+
     def search_code(self, query, repo_full_name=None):
         """
         Searches for code on GitHub based on a query, optionally within a specific repository.
 
         :param query: The search query string.
         :param repo_full_name: Optional. The full name of the repository (e.g., 'octocat/Hello-World') to restrict the search to.
-        :param sort: The field to sort the results by. Default is 'indexed'.
-        :param order: The order of sorting, 'asc' or 'desc'. Default is 'desc'.
         :return: A list of code search results or None if an error occurs.
         """
         try:
@@ -85,23 +95,16 @@ class GitHubAPIHandler:
             # If a repository full name is provided, include it in the query
             if repo_full_name:
                 query = f"{query} repo:{repo_full_name}"
-            
+
             # Perform the search
-            code_results = self._github.search_code(query=query)
-            total_count = code_results.totalCount
-            code_results = list(code_results[:min(config.get("code_search_max_hits"), total_count)]) # Limit to the first code_search_max_hits results
-            #filter search results by stars
-            code_results = [
-                code_result
-                for index, code_result in enumerate(code_results)
-                if code_result.repository.stargazers_count + config.get("code_search_max_hits") - index >= config.get("min_stars_to_keep_result")
-            ]
-            logger.debug(f"Retrieved {len(code_results)} code search results.")
-            
+            code_results = self._github.search_code(
+                query=query, per_page=config.get("code_search_max_hits"))
+
             results_with_index = []
             with ThreadPoolExecutor(max_workers=config.get("max_workers")) as executor:
                 # Concurrently fetch the file content for each code search result
-                future_to_index = {executor.submit(self._get_file_content_through_repository, code_result): index for index, code_result in enumerate(code_results)}
+                future_to_index = {executor.submit(
+                    self._get_file_content_through_repository, code_result): index for index, code_result in enumerate(code_results)}
                 for future in as_completed(future_to_index):
                     index = future_to_index[future]
                     code_result = code_results[index]
@@ -110,24 +113,184 @@ class GitHubAPIHandler:
                         if repository_obj and file_content:
                             results_with_index.append({
                                 'index': index,
-                                'name': code_result.name,
-                                'path': code_result.path,
-                                'repository_full_name': code_result.repository.full_name,
-                                'url': code_result.url,
+                                'name': code_result['name'],
+                                'path': code_result['path'],
+                                'repository_full_name': code_result['repository']['full_name'],
+                                'url': code_result['html_url'],
                                 'content': file_content,
                                 'stargazers_count': repository_obj.stargazers_count,
                                 'watchers_count': repository_obj.watchers_count,
                                 'language': repository_obj.language,
                                 'description': repository_obj.description,
+                                'updated_at': repository_obj.updated_at,
                             })
                     except Exception as e:
-                        logger.exception(f"{code_result.name} generated an exception:")
+                        logger.exception(
+                            f"{code_result['name']} generated an exception:")
 
             # Sort the results by index to maintain the original order
-            sorted_results = sorted(results_with_index, key=lambda x: x['index'])
-            logger.debug(f"Code search retrieved successfully with {len(sorted_results)} results.")
+            sorted_results = sorted(
+                results_with_index, key=lambda x: x['index'])
+            logger.debug(
+                f"Code search retrieved successfully with {len(sorted_results)} results.")
             return sorted_results
         except GithubException as e:
             logger.exception(f"Error searching code with query '{query}':")
             return None
 
+    def _get_issue_content_through_repository(self, issue):
+        """
+        Helper method to get issue content through issue url.
+
+        :param code_result: A single code search result.
+        :return: Tuple containing the Repository object and the file content.
+        """
+        # Assuming RepositoryPool is accessible and initialized somewhere in this clas
+        issue_content = ''
+        issue_url = issue['url']
+        # Use regular expressions to extract repo_full_name and issue_number
+        match = re.search(
+            r'https://api.github.com/repos/([^/]+/[^/]+)/issues/(\d+)', issue_url)
+        if match:
+            repo_full_name = match.group(1)
+            issue_number = int(match.group(2))
+            repository_obj = self.get_repository(repo_full_name)
+            issue_content = repository_obj.get_issue_content(
+                number=issue_number, issue=issue)
+        else:
+            logger.warning(
+                f"Failed to extract repo_full_name and issue_number from issue url: {issue_url}")
+        return issue_content
+
+    def search_issues(self, query, repo_full_name=None):
+        """
+        Searches for issues on GitHub based on a query, optionally within a specific repository.
+
+        :param query: The search query string.
+        :param repo_full_name: Optional. The full name of the repository (e.g., 'octocat/Hello-World') to restrict the search to.
+        :return: A list of issue search results or None if an error occurs.
+        """
+        try:
+            logger.debug(f"Searching issue with query '{query}'...")
+            # If a repository full name is provided, include it in the query
+            if repo_full_name:
+                query = f"{query} repo:{repo_full_name}"
+
+            # Perform the search
+            issue_results = self._github.search_issues(
+                query=query, per_page=config.get("issue_search_max_hits"))
+
+            issue_results = [issue for issue in issue_results if issue['body']
+                             is not None and issue['body'] != 'null']
+
+            results_with_index = []
+            with ThreadPoolExecutor(max_workers=config.get("max_workers")) as executor:
+                # Concurrently fetch the issue content for each issue search result
+                future_to_index = {executor.submit(
+                    self._get_issue_content_through_repository, issue): index for index, issue in enumerate(issue_results)}
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    issue_result = issue_results[index]
+                    try:
+                        issue_content = future.result()
+                        results_with_index.append({
+                            'index': index,
+                            'url': issue_result['url'],
+                            'created_at': issue_result['created_at'],
+                            'updated_at': issue_result['updated_at'],
+                            'issue_content': issue_content,
+                        })
+                    except Exception as e:
+                        logger.exception(
+                            f"{issue_result['url']} generated an exception:")
+
+            # Sort the results by index to maintain the original order
+            sorted_results = sorted(
+                results_with_index, key=lambda x: x['index'])
+            logger.debug(
+                f"Issue search retrieved successfully with {len(sorted_results)} results.")
+            return sorted_results
+        except GithubException as e:
+            logger.exception(f"Error searching issue with query '{query}':")
+            return None
+
+    def _categorize_github_url(url):
+        repo_pattern = r'^https://github\.com/[^/]+/[^/]+$'
+        issue_pattern = r'^https://github\.com/[^/]+/[^/]+/issues/\d+$'
+        repo_file_pattern = r'^https://github\.com/[^/]+/[^/]+/(?:blob|tree)/[^/]+/.+$'
+        readme_pattern = r'^https://github\.com/[^/]+/[^/]+#readme$'
+
+        if re.match(repo_pattern, url):
+            return "repo"
+        elif re.match(issue_pattern, url):
+            return "issue"
+        elif re.match(repo_file_pattern, url):
+            return "file"
+        elif re.match(readme_pattern, url):
+            return "readme"
+        else:
+            return "other"
+    
+    def get_github_url_content(self, url):
+        """
+        Retrieves the content of a GitHub URL.
+
+        :param url: The GitHub URL to retrieve content from.
+        :return: The content of the URL or None if an error occurs.
+        """
+        try:
+            logger.debug(f"Retrieving content from GitHub URL '{url}'...")
+            content = None
+            category = GitHubAPIHandler._categorize_github_url(url)
+            if category == "repo":
+                # Extract the repository full name from the URL
+                match = re.search(r'https://github\.com/([^/]+/[^/]+)', url)
+                if match:
+                    repo_full_name = match.group(1)
+                    repository_obj = self.get_repository(repo_full_name)
+                    content = repository_obj.get_readme()
+                else:
+                    logger.warning(
+                        f"Failed to extract repository full name from URL: {url}")
+            elif category == "issue":
+                # Use regular expressions to extract repo_full_name and issue_number
+                match = re.search(
+                    r'https://github\.com/([^/]+/[^/]+)/issues/(\d+)', url)
+                if match:
+                    repo_full_name = match.group(1)
+                    issue_number = int(match.group(2))
+                    repository_obj = self.get_repository(repo_full_name)
+                    content = repository_obj.get_issue_content(
+                        number=issue_number)
+                else:
+                    logger.warning(
+                        f"Failed to extract repo_full_name and issue_number from URL: {url}")
+            elif category == "file":
+                # Extract the repository full name and file path from the URL
+                match = re.search(
+                    r'https://github\.com/([^/]+/[^/]+)/(?:blob|tree)/([^/]+)/(.+)', url)
+                if match:
+                    repo_full_name = match.group(1)
+                    file_path = match.group(3)
+                    repository_obj = self.get_repository(repo_full_name)
+                    content = repository_obj.get_file_content(
+                        file_path)
+                else:
+                    logger.warning(
+                        f"Failed to extract repository full name and file path from URL: {url}")
+            elif category == "readme":
+                # Extract the repository full name from the URL
+                match = re.search(r'https://github\.com/([^/]+/[^/]+)#readme', url)
+                if match:
+                    repo_full_name = match.group(1)
+                    repository_obj = self.get_repository(repo_full_name)
+                    content = repository_obj.get_readme()
+                else:
+                    logger.warning(
+                        f"Failed to extract repository full name from URL: {url}")
+            else:
+                logger.warning(f"Unsupported GitHub URL category: {category}")
+            return content
+        except GithubException as e:
+            logger.exception(f"Error retrieving content from GitHub URL '{url}':")
+            return None
