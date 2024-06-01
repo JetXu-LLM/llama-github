@@ -35,9 +35,6 @@ print(context)
 
 For more advanced usage and examples, please refer to the [documentation](docs/usage.md).
 
-## Project Architecture
-
-
 ## Key Features
 
 - **🔍 Intelligent GitHub Retrieval**: Harness the power of llama-github to retrieve highly relevant code snippets, issues, and repository information from GitHub based on user queries. Our advanced retrieval techniques ensure you find the most pertinent information quickly and efficiently.

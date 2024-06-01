@@ -1,7 +1,11 @@
-onnx
-transformers
+aiohttp
+asyncio
+dataclasses
+PyGithub
 langchain
-langchain_openai
-optimum
+numpy
+pydantic
+requests
 torch
-sentence_transformers
+transformers
+urllib3
