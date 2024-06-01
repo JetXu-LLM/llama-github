@@ -1,12 +1,16 @@
 # initial_load.py
+import torch
+from typing import Optional, Any
 from threading import Lock
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-import torch
+
 from llama_github.config.config import config
 from llama_github.logger import logger
-from typing import Optional, Any
+
+from transformers import AutoModel
+from transformers import AutoModelForSequenceClassification
 from transformers import AutoTokenizer
 
 
@@ -60,33 +64,26 @@ class LLMManager:
             self.model_type = "Hubgingface"
 
         # initial model_kwargs
-        device = "cpu"
         if torch.cuda.is_available():
-            device = "cuda"
+            self.device = torch.device('cuda')
         elif torch.backends.mps.is_available():
-            device = "mps"
+            self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
 
         # initial embedding_model
         if self.tokenizer is None:
-            model_kwargs = {'device': device, 'trust_remote_code': True}
-            if (huggingface_token is not None and huggingface_token != ""):
-                model_kwargs['token'] = huggingface_token
-            encode_kwargs = {'normalize_embeddings': True}
             logger.info(f"Initializing {embedding_model}...")
             self.tokenizer = AutoTokenizer.from_pretrained(embedding_model)
-            # self.embedding_model = HuggingFaceEmbeddings(
-            #     model_name=embedding_model,
-            #     model_kwargs=model_kwargs,
-            #     encode_kwargs=encode_kwargs,
-            # )
+            self.embedding_model = AutoModel.from_pretrained(
+                embedding_model, trust_remote_code=True).to(self.device)
+
         # initial rerank_model
         if self.rerank_model is None:
-            model_kwargs = {'device': device, 'trust_remote_code': True}
             logger.info(f"Initializing {rerank_model}...")
-            self.rerank_model = HuggingFaceCrossEncoder(
-                model_name=rerank_model,
-                model_kwargs=model_kwargs,
-            )
+            self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
+                rerank_model, num_labels=1, trust_remote_code=True
+            ).to(self.device)
 
     def get_llm(self):
         return self.llm
@@ -99,3 +96,6 @@ class LLMManager:
 
     def get_rerank_model(self):
         return self.rerank_model
+
+    def get_embedding_model(self):
+        return self.embedding_model

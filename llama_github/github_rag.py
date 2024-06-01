@@ -11,10 +11,12 @@ from llama_github.rag_processing.rag_processor import RAGProcessor
 from llama_github.github_integration.github_auth_manager import GitHubAuthManager
 from llama_github.data_retrieval.github_api import GitHubAPIHandler
 from llama_github.data_retrieval.github_entities import Repository, RepositoryPool
+from llama_github.utils import AsyncHTTPClient
 
 import asyncio
 from IPython import get_ipython
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 
 
 @dataclass
@@ -31,6 +33,7 @@ class GithubRAG:
                  github_app_credentials: Optional[GitHubAppCredentials] = None,
                  openai_api_key: Optional[str] = None,
                  huggingface_token: Optional[str] = None,
+                 jina_api_key: Optional[str] = None,
                  open_source_models_hg_dir: Optional[str] = None,
                  embedding_model: Optional[str] = config.get(
                      "default_embedding"),
@@ -43,8 +46,9 @@ class GithubRAG:
         Parameters:
         - github_access_token (Optional[str]): GitHub access token for authentication.
         - github_app_credentials (Optional[GitHubAppCredentials]): Credentials for GitHub App authentication.
-        - openai_api_key (Optional[str]): API key for OpenAI services -- recommend to use, GPT-4o will be used.
+        - openai_api_key (Optional[str]): API key for OpenAI services -- recommend to use, GPT-4-turbo will be used.
         - huggingface_token (Optional[str]): Token for Hugging Face services -- recommend to fill.
+        - jina_api_key (Optional[str]): API key for Jina AI services -- s.jina.ai API will be used
         - open_source_models_hg_dir (Optional[str]): Name of open-source models from Hugging Face to replace OpenAI.
         - embedding_model (Optional[str]): Name of Embedding model from Hugging Face, if you have preferred embedding model to be used.
         - rerank_model (Optional[str]): Name of Rerank model from Hugging Face, if you have preferred rerank model to be used.
@@ -83,6 +87,8 @@ class GithubRAG:
             self.github_api_handler = GitHubAPIHandler(self.github_instance)
             logger.debug("Repository Pool Initialized.")
 
+            self.jina_api_key = jina_api_key
+
             logger.debug(
                 "Initializing llm manager, embedding model & reranker model...")
             self.llm_manager = LLMManager(
@@ -96,55 +102,81 @@ class GithubRAG:
             logger.error(f"Error initializing GithubRAG: {e}")
             raise e
 
-    async def async_retrieve_context(self, query) -> List[str]:
+    async def async_retrieve_context(self, query, simple_mode=False) -> List[str]:
         # Implementation of the context retrieval process
         # This will involve using the GitHub API to search for relevant information,
         # augmenting the retrieved data through the RAG methodology, and
         # enhancing it with LLM capabilities.
 
-        context_list = []  # This will be the list of context strings
+        topn_contexts = []  # This will be the list of context strings
         try:
             logger.info("Retrieving context...")
-            # Analyzing question and generating strategy
-            analyze_strategy = asyncio.create_task(
-                self.rag_processor.analyze_question(query))
+            if simple_mode:
+                #In simple mode, only a Google search will be conducted based on the user's question.
+                #This model is not suitable for long questions (e.g., questions with more than 20 words).
+                task_google_search = asyncio.create_task(
+                    self.google_search_retrieval(query=query))
+                await asyncio.gather(task_google_search)
+                logger.debug(
+                    f"Google search: {str(len(task_google_search.result()))}")
+                context_list = self.rag_processor.arrange_context(
+                    google_search_result=task_google_search.result())
+                if len(context_list)>0:
+                    topn_contexts = await self.rag_processor.retrieve_topn_contexts(
+                        context_list=context_list, query=query, top_n=config.get("top_n_contexts"))
+            else:
+                # Analyzing question and generating strategy
+                analyze_strategy = asyncio.create_task(
+                    self.rag_processor.analyze_question(query))
+                # wait for generate analyze strategy
+                await analyze_strategy
+                analyzed_strategy = analyze_strategy.result()
+                logger.debug(f"Analyze strategy: {analyzed_strategy}")
 
-            # wait for generate analyze strategy
-            await analyze_strategy
-            analyzed_strategy = analyze_strategy.result()
+                # google search from GitHub
+                tokens = self.llm_manager.get_tokenizer().encode(query)
+                query_tokens = len(tokens)
+                task_google_search = asyncio.create_task(
+                    self.google_search_retrieval(query=query if query_tokens < 20 else analyzed_strategy[0]))
+                # code search from GitHub
+                task_code_search = asyncio.create_task(
+                    self.code_search_retrieval(query=analyzed_strategy[0], draft_answer=analyzed_strategy[1]+"\n\n"+analyzed_strategy[2]))
+                # issue search from GitHub
+                task_issue_search = asyncio.create_task(
+                    self.issue_search_retrieval(query=analyzed_strategy[0], draft_answer=analyzed_strategy[1]+"\n\n"+analyzed_strategy[3]))
+                # repo search from GitHub
+                task_repo_search = asyncio.create_task(
+                    self.repo_search_retrieval(query=analyzed_strategy[0]))
 
-            # code search from GitHub
-            task_code_search = asyncio.create_task(
-                self.code_search_retrieval(query=analyzed_strategy[0], draft_answer=analyzed_strategy[1]+"\n\n"+analyzed_strategy[2]))
-            # issue search from GitHub
-            task_issue_search = asyncio.create_task(
-                self.issue_search_retrieval(query=analyzed_strategy[0], draft_answer=analyzed_strategy[1]+"\n\n"+analyzed_strategy[3]))
-            # repo search from GitHub
-            task_repo_search = asyncio.create_task(
-                self.repo_search_retrieval(query=analyzed_strategy[0]))
+                # wait for all tasks to complete
+                await asyncio.gather(task_google_search, task_code_search, task_issue_search, task_repo_search)
 
-            # wait for all tasks to complete
-            await asyncio.gather(task_code_search, task_issue_search, task_repo_search)
-            logger.debug(f"Analyze strategy: {analyzed_strategy}")
-            logger.debug(
-                f"Code search: {pformat(task_code_search.result()[:5], indent=4)}")
-            logger.debug(
-                f"Issue search: {pformat(task_issue_search.result()[:5], indent=4)}")
-            logger.debug(
-                f"Repo search: {pformat(task_repo_search.result()[:5], indent=4)}")
+                logger.debug(
+                    f"Google search: {str(len(task_google_search.result()))}")
+                logger.debug(
+                    f"Code search: {str(len(task_code_search.result()))}")
+                logger.debug(
+                    f"Issue search: {str(len(task_issue_search.result()))}")
+                logger.debug(
+                    f"Repo search: {str(len(task_repo_search.result()))}")
 
-            self.issue_search_result = task_issue_search.result()
+                context_list = self.rag_processor.arrange_context(
+                    code_search_result=task_code_search.result(),
+                    issue_search_result=task_issue_search.result(),
+                    repo_search_result=task_repo_search.result(),
+                    google_search_result=task_google_search.result())
 
-            context_list = self.rag_processor.arrange_context(
-                code_search_result=task_code_search.result(), issue_search_result=task_issue_search.result(), repo_search_result=task_repo_search.result())
+                if len(context_list)>0:
+                    topn_contexts = await self.rag_processor.retrieve_topn_contexts(
+                        context_list=context_list, query=query, answer=analyzed_strategy[1], top_n=config.get("top_n_contexts"))
 
             logger.info("Context retrieved successfully.")
         except Exception as e:
             logger.error(f"Error retrieving context: {e}")
             raise e
-        return context_list
+        return topn_contexts
 
-    def retrieve_context(self, query) -> List[str]:
+    def retrieve_context(self, query, simple_mode=False) -> List[str]:
         """
         Retrieve context from GitHub code, issue and repo search based on the input query.
 
@@ -160,10 +192,10 @@ class GithubRAG:
             logger.debug("Running in Jupyter notebook, nest_asyncio applied.")
             import nest_asyncio
             nest_asyncio.apply()
-            return asyncio.run(self.async_retrieve_context(query))
+            return asyncio.run(self.async_retrieve_context(query, simple_mode=simple_mode))
         if self.loop.is_running():
-            return asyncio.ensure_future(self.async_retrieve_context(query))
-        return self.loop.run_until_complete(self.async_retrieve_context(query))
+            return asyncio.ensure_future(self.async_retrieve_context(query, simple_mode=simple_mode))
+        return self.loop.run_until_complete(self.async_retrieve_context(query, simple_mode=simple_mode))
 
     async def code_search_retrieval(self, query, draft_answer: Optional[str] = None):
         result = []
@@ -188,7 +220,7 @@ class GithubRAG:
             logger.info("Code search retrieved successfully.")
         except Exception as e:
             logger.error(f"Error retrieving code search: {e}")
-            raise e
+
         return result
 
     async def issue_search_retrieval(self, query, draft_answer: Optional[str] = None):
@@ -214,7 +246,42 @@ class GithubRAG:
             logger.info("Issue search retrieved successfully.")
         except Exception as e:
             logger.error(f"Error retrieving issue search: {e}")
-            raise e
+
+        return result
+
+    async def google_search_retrieval(self, query):
+        result = []
+        try:
+            logger.info("Retrieving google search...")
+            encoded_query = quote("site:github.com "+query)
+            url = f"https://s.jina.ai/{encoded_query}"
+            if self.jina_api_key is not None and self.jina_api_key != "":
+                headers = {
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {self.jina_api_key}"
+                }
+                retry_delay = 1
+            else:
+                headers = {
+                    "Accept": "application/json"
+                }
+                retry_delay = 20
+
+            response = await AsyncHTTPClient.request(url, headers=headers, retry_count=2, retry_delay=retry_delay)
+            urls = []
+            urls = [item["url"] for item in response["data"] if "url" in item]
+
+            for github_url in urls:
+                content = self.github_api_handler.get_github_url_content(
+                    github_url)
+                if content and content != "":
+                    result.append({
+                        'url': github_url,
+                        'content': content
+                    })
+            logger.info(f"Google search retrieved successfully:{urls}")
+        except Exception as e:
+            logger.error(f"Error retrieving google search: {e}")
         return result
 
     def _get_repository_rag_info(self, repository: Repository):
@@ -278,5 +345,4 @@ class GithubRAG:
             logger.info("Repo search retrieved successfully.")
         except Exception as e:
             logger.error(f"Error retrieving repos search: {e}")
-            raise e
         return results_with_index

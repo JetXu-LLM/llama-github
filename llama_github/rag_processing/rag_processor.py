@@ -9,6 +9,10 @@ from typing import List, Optional, Dict
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 import json
 import math
+from numpy.linalg import norm
+import numpy as np
+import asyncio
+
 
 class RAGProcessor:
     def __init__(self, github_api_handler: GitHubAPIHandler, llm_manager: LLMManager = None, llm_handler: LLMHandler = None):
@@ -278,9 +282,9 @@ class RAGProcessor:
             chunk_overlap = chunk_overlap * 5
             language_enum = Language[language.upper()]
             splitter = RecursiveCharacterTextSplitter.from_language(
-                language = language_enum,
-                chunk_size = max_tokens,
-                chunk_overlap = chunk_overlap,
+                language=language_enum,
+                chunk_size=max_tokens,
+                chunk_overlap=chunk_overlap,
             )
 
         chunks = splitter.split_text(content)
@@ -302,7 +306,8 @@ class RAGProcessor:
             content = result['issue_content']
 
             # Split content into chunks
-            chunks = self._split_content_into_chunks(content, max_tokens=config.get('issue_chunk_size'))
+            chunks = self._split_content_into_chunks(
+                content, max_tokens=config.get('issue_chunk_size'))
 
             for chunk in chunks:
                 arranged_results.append(chunk)
@@ -325,14 +330,39 @@ class RAGProcessor:
             content = result['content']
 
             # Split content into chunks
-            chunks = self._split_content_into_chunks(content, max_tokens=config.get('repo_chunk_size'))
+            chunks = self._split_content_into_chunks(
+                content, max_tokens=config.get('repo_chunk_size'))
 
             for chunk in chunks:
                 arranged_results.append(chunk)
 
         return arranged_results
 
-    def arrange_context(self, code_search_result: Optional[dict] = None, issue_search_result: Optional[dict] = None, repo_search_result: Optional[dict] = None) -> dict:
+    def _arrange_google_search_result(self, google_search_result: dict) -> dict:
+        """
+        arrange the result of google search
+
+        Args:
+            google_search_result (dict): the result of google search.
+
+        Returns:
+            dict: the arranged result of google search.
+        """
+        arranged_results = []
+
+        for result in google_search_result:
+            content = result['content']
+
+            # Split content into chunks
+            chunks = self._split_content_into_chunks(
+                content, max_tokens=config.get('google_chunk_size'))
+
+            for chunk in chunks:
+                arranged_results.append(chunk)
+
+        return arranged_results
+
+    def arrange_context(self, code_search_result: Optional[dict] = None, issue_search_result: Optional[dict] = None, repo_search_result: Optional[dict] = None, google_search_result: Optional[dict] = None) -> dict:
         """
         arrange the context before RAG
 
@@ -340,6 +370,7 @@ class RAGProcessor:
             code_search_result (dict, optional): the result of code search. Defaults to None.
             issue_search_result (dict, optional): the result of issue search. Defaults to None.
             repo_search_result (dict, optional): the result of repo search. Defaults to None.
+            google_search_result (dict, optional): the result of google search. Defaults to None.
 
         Returns:
             dict: the arranged context.
@@ -354,4 +385,167 @@ class RAGProcessor:
         if repo_search_result:
             context.extend(
                 self._arrange_repo_search_result(repo_search_result))
+        if google_search_result:
+            context.extend(
+                self._arrange_google_search_result(google_search_result))
         return context
+
+    # async def retrieve_topn_contexts(self, context_list, query: str, answer: Optional[str] = None, top_n: Optional[int] = 5):
+    #     """
+    #     Retrieve top n context strings from the context list.
+
+    #     Args:
+    #         context_list (List[str]): List of context strings to retrieve top n from.
+    #         top_n (int): Number of top context strings to retrieve.
+
+    #     Returns:
+    #         List[str]: A list of top n context strings.
+    #     """
+    #     top_contexts = []
+    #     try:
+    #         reranker = self.llm_manager.get_rerank_model()
+
+    #         sentence_pairs = [[query, doc] for doc in context_list]
+
+    #         scores = reranker.compute_score(sentence_pairs)
+
+    #         # Zip scores with contexts
+    #         scored_contexts = list(zip(scores, context_list))
+
+    #         sorted_scored_contexts = sorted(
+    #             scored_contexts, key=lambda x: x[0], reverse=True)
+
+    #         # Extract top 3*top_n contexts after rerank
+    #         selected_context = [context for score, context in sorted_scored_contexts[:min(
+    #             top_n*3, len(sorted_scored_contexts))]]
+
+    #         # if there is too less contexts, skip embedding comparison step
+    #         if len(selected_context) < top_n*2:
+    #             return selected_context[:min(top_n, len(selected_context))]
+
+    #         # calculate embedding to select top 2*top_n
+    #         logger.debug(f"Embedding start...")
+    #         embedding_model = self.llm_manager.get_embedding_model()
+    #         query_embedding = embedding_model.encode(
+    #             query+"\n"+answer if answer is not None else "")
+    #         context_embeddings = []
+
+    #         for context in selected_context:
+    #             embedding = embedding_model.encode(context)
+    #             context_embeddings.append(embedding)
+
+    #         cos_similarities = []
+    #         for context_embedding in context_embeddings:
+    #             cos_sim = (query_embedding @ context_embedding.T) / \
+    #                 (norm(query_embedding) * norm(context_embedding))
+    #             cos_similarities.append(cos_sim)
+
+    #         top_indices = np.argsort(cos_similarities)[-(top_n*2):][::-1]
+    #         top_contexts = [selected_context[i] for i in top_indices]
+
+    #         #Use simple LLM to calculate context score
+    #         scores = await asyncio.gather(*[self.get_context_relevance_score(query, context) for context in top_contexts])
+    #         logger.debug(f"Simple LLM scores:{str(scores)}")
+    #         context_scores = list(zip(top_contexts, scores))
+    #         logger.debug(f"Simple LLM context_scores:{str(context_scores)}")
+    #         sorted_context_scores = sorted(context_scores, key=lambda x: x[1], reverse=True)
+    #         logger.debug(f"Simple LLM sorted_context_scores:{str(sorted_context_scores)}")
+    #         top_context_scores = sorted_context_scores[:top_n]
+    #         top_contexts = [context for context, _ in top_context_scores]
+    #         logger.debug(f"Simple LLM top_contexts:{str(top_contexts)}")
+    #     except Exception as e:
+    #         logger.error(f"Error retrieving top n context: {e}")
+
+    #     return top_contexts
+
+    async def retrieve_topn_contexts(self, context_list: List[str], query: str, answer: Optional[str] = None, top_n: Optional[int] = 5) -> List[str]:
+        """
+        Retrieve top n context strings from the context list.
+
+        Args:
+            context_list (List[str]): List of context strings to retrieve top n from.
+            query (str): The query string.
+            answer (Optional[str]): The answer string (optional).
+            top_n (Optional[int]): Number of top context strings to retrieve (default: 5).
+
+        Returns:
+            List[str]: A list of top n context strings.
+        """
+        top_contexts = []
+        try:
+            reranker = self.llm_manager.get_rerank_model()
+
+            sentence_pairs = [[query, doc] for doc in context_list]
+            rerank_scores = reranker.compute_score(sentence_pairs)
+
+            # Zip scores with contexts
+            scored_contexts = list(zip(rerank_scores, context_list))
+            sorted_scored_contexts = sorted(scored_contexts, key=lambda x: x[0], reverse=True)
+
+            # Extract top 3*top_n contexts after rerank
+            selected_context = [context for score, context in sorted_scored_contexts[:min(top_n*3, len(sorted_scored_contexts))]]
+
+            # If there are too few contexts, skip embedding comparison step
+            if len(selected_context) < top_n*2:
+                return selected_context[:min(top_n, len(selected_context))]
+
+            # Calculate embedding to select top 2*top_n
+            logger.debug("Embedding start...")
+            embedding_model = self.llm_manager.get_embedding_model()
+            query_embedding = embedding_model.encode(query + "\n" + answer if answer is not None else "")
+            context_embeddings = [embedding_model.encode(context) for context in selected_context]
+
+            cos_similarities = [(query_embedding @ context_embedding.T) / (norm(query_embedding) * norm(context_embedding))
+                                for context_embedding in context_embeddings]
+
+            top_indices = np.argsort(cos_similarities)[-(top_n*2):][::-1]
+            top_contexts = [selected_context[i] for i in top_indices]
+            top_cos_similarities = [cos_similarities[i] for i in top_indices]
+            top_rerank_scores = [rerank_scores[context_list.index(context)] for context in top_contexts]
+
+            # Use simple LLM to calculate context score
+            llm_scores = await asyncio.gather(*[self.get_context_relevance_score(query, context) for context in top_contexts])
+            logger.debug(f"Simple LLM scores: {llm_scores}")
+
+            # Combine scores for final ranking
+            combined_scores = [llm_score * cos_sim * rerank_score
+                            for llm_score, cos_sim, rerank_score in zip(llm_scores, top_cos_similarities, top_rerank_scores)]
+
+            combined_context_scores = list(zip(top_contexts, combined_scores))
+            sorted_combined_context_scores = sorted(combined_context_scores, key=lambda x: x[1], reverse=True)
+            logger.debug(f"Combined sorted context scores: {sorted_combined_context_scores}")
+
+            top_contexts = [context for context, _ in sorted_combined_context_scores[:top_n]]
+            logger.debug(f"Final top contexts: {top_contexts}")
+        except Exception as e:
+            logger.error(f"Error retrieving top n context: {e}")
+
+        return top_contexts
+
+
+    class _ContextRelevanceScore(BaseModel):
+        score: int = Field(
+            ...,
+            description="This is a Context Relevance Score, ranging from 0 to 100, indicates how well a given coding-related context supports answering a specific question, with higher scores signifying greater relevance."
+        )
+
+    async def get_context_relevance_score(self, query: str, context: str) -> int:
+        """
+        generate context relevance score based on user's question and provided context
+
+        Args:
+            query (str): user's initial question.
+            context (str): context fetched from Github
+
+        Returns:
+            int: context relevance score, from 0-100.
+        """
+        try:
+            prompt = config.get("scoring_context_prompt")
+            response = await self.llm_handler.ainvoke(human_question=query, prompt=prompt, context=[context], output_structure=self._ContextRelevanceScore, simple_llm=True)
+            logger.debug(
+                f"For {context[:20]}, the context relevance score is: {response.score}")
+            return response.score
+        except Exception as e:
+            logger.error(f"Error in get_context_relevance_score: {e}")
+            return -1

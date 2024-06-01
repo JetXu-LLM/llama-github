@@ -14,3 +14,8 @@ tags = ["apikey"]
 description = "GitHub Token"
 regex = '''ghp_[a-zA-Z0-9]{36}'''
 tags = ["apikey"]
+
+[[rules]]
+description = "Jina AI API Key"
+regex = '''jina_[a-zA-Z0-9]{32}[a-zA-Z0-9]{16}'''
+tags = ["apikey"]
