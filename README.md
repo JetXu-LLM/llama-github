@@ -23,10 +23,10 @@ github_rag = GithubRAG(
     jina_api_key="your_jina_api_key" # Optional - unless you want high concurrency production deployment (s.jina.ai API will be used in llama-github)
 )
 
-# Retrieve context for a coding question (simple_mode is default false)
+# Retrieve context for a coding question (simple_mode is default set to False)
 query = "How to create a NumPy array in Python?"
 context = github_rag.retrieve_context(
-    query,
+    query, # In professional mode, one query will take nearly 1 min to generate final contexts. You could set log level to INFO to monitor the retrieval progress
     # simple_mode = True
 )
 
