@@ -20,7 +20,6 @@ from llama_github import GithubRAG
 github_rag = GithubRAG(
     github_access_token="your_github_access_token", 
     openai_api_key="your_openai_api_key", # Optional in Simple Mode
-    huggingface_token="your_huggingface_token", # Optional
     jina_api_key="your_jina_api_key" # Optional - unless you want high concurrency production deployment (s.jina.ai API will be used in llama-github)
 )
 
