@@ -1,5 +1,6 @@
 # llama-github
 
+[![PyPI version](https://badge.fury.io/py/llama-github.svg)](https://badge.fury.io/py/llama-github)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Llama-github is an open-source Python library that empowers LLM Chatbots, AI Agents, and Auto-dev Agents to conduct Retrieval from actively selected GitHub public contents (Repository, Issue, Code). It Augments through LLMs and Generates context for any coding question, in order to streamline the development of sophisticated AI-driven applications.
