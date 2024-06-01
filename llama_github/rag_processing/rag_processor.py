@@ -390,74 +390,6 @@ class RAGProcessor:
                 self._arrange_google_search_result(google_search_result))
         return context
 
-    # async def retrieve_topn_contexts(self, context_list, query: str, answer: Optional[str] = None, top_n: Optional[int] = 5):
-    #     """
-    #     Retrieve top n context strings from the context list.
-
-    #     Args:
-    #         context_list (List[str]): List of context strings to retrieve top n from.
-    #         top_n (int): Number of top context strings to retrieve.
-
-    #     Returns:
-    #         List[str]: A list of top n context strings.
-    #     """
-    #     top_contexts = []
-    #     try:
-    #         reranker = self.llm_manager.get_rerank_model()
-
-    #         sentence_pairs = [[query, doc] for doc in context_list]
-
-    #         scores = reranker.compute_score(sentence_pairs)
-
-    #         # Zip scores with contexts
-    #         scored_contexts = list(zip(scores, context_list))
-
-    #         sorted_scored_contexts = sorted(
-    #             scored_contexts, key=lambda x: x[0], reverse=True)
-
-    #         # Extract top 3*top_n contexts after rerank
-    #         selected_context = [context for score, context in sorted_scored_contexts[:min(
-    #             top_n*3, len(sorted_scored_contexts))]]
-
-    #         # if there is too less contexts, skip embedding comparison step
-    #         if len(selected_context) < top_n*2:
-    #             return selected_context[:min(top_n, len(selected_context))]
-
-    #         # calculate embedding to select top 2*top_n
-    #         logger.debug(f"Embedding start...")
-    #         embedding_model = self.llm_manager.get_embedding_model()
-    #         query_embedding = embedding_model.encode(
-    #             query+"\n"+answer if answer is not None else "")
-    #         context_embeddings = []
-
-    #         for context in selected_context:
-    #             embedding = embedding_model.encode(context)
-    #             context_embeddings.append(embedding)
-
-    #         cos_similarities = []
-    #         for context_embedding in context_embeddings:
-    #             cos_sim = (query_embedding @ context_embedding.T) / \
-    #                 (norm(query_embedding) * norm(context_embedding))
-    #             cos_similarities.append(cos_sim)
-
-    #         top_indices = np.argsort(cos_similarities)[-(top_n*2):][::-1]
-    #         top_contexts = [selected_context[i] for i in top_indices]
-
-    #         #Use simple LLM to calculate context score
-    #         scores = await asyncio.gather(*[self.get_context_relevance_score(query, context) for context in top_contexts])
-    #         logger.debug(f"Simple LLM scores:{str(scores)}")
-    #         context_scores = list(zip(top_contexts, scores))
-    #         logger.debug(f"Simple LLM context_scores:{str(context_scores)}")
-    #         sorted_context_scores = sorted(context_scores, key=lambda x: x[1], reverse=True)
-    #         logger.debug(f"Simple LLM sorted_context_scores:{str(sorted_context_scores)}")
-    #         top_context_scores = sorted_context_scores[:top_n]
-    #         top_contexts = [context for context, _ in top_context_scores]
-    #         logger.debug(f"Simple LLM top_contexts:{str(top_contexts)}")
-    #     except Exception as e:
-    #         logger.error(f"Error retrieving top n context: {e}")
-
-    #     return top_contexts
-
     async def retrieve_topn_contexts(self, context_list: List[str], query: str, answer: Optional[str] = None, top_n: Optional[int] = 5) -> List[str]:
         """
         Retrieve top n context strings from the context list.
@@ -480,10 +412,12 @@ class RAGProcessor:
 
             # Zip scores with contexts
             scored_contexts = list(zip(rerank_scores, context_list))
-            sorted_scored_contexts = sorted(scored_contexts, key=lambda x: x[0], reverse=True)
+            sorted_scored_contexts = sorted(
+                scored_contexts, key=lambda x: x[0], reverse=True)
 
             # Extract top 3*top_n contexts after rerank
-            selected_context = [context for score, context in sorted_scored_contexts[:min(top_n*3, len(sorted_scored_contexts))]]
+            selected_context = [context for score, context in sorted_scored_contexts[:min(
+                top_n*3, len(sorted_scored_contexts))]]
 
             # If there are too few contexts, skip embedding comparison step
             if len(selected_context) < top_n*2:
@@ -492,8 +426,10 @@ class RAGProcessor:
             # Calculate embedding to select top 2*top_n
             logger.debug("Embedding start...")
             embedding_model = self.llm_manager.get_embedding_model()
-            query_embedding = embedding_model.encode(query + "\n" + answer if answer is not None else "")
-            context_embeddings = [embedding_model.encode(context) for context in selected_context]
+            query_embedding = embedding_model.encode(
+                query + "\n" + answer if answer is not None else "")
+            context_embeddings = [embedding_model.encode(
+                context) for context in selected_context]
 
             cos_similarities = [(query_embedding @ context_embedding.T) / (norm(query_embedding) * norm(context_embedding))
                                 for context_embedding in context_embeddings]
@@ -501,7 +437,8 @@ class RAGProcessor:
             top_indices = np.argsort(cos_similarities)[-(top_n*2):][::-1]
             top_contexts = [selected_context[i] for i in top_indices]
             top_cos_similarities = [cos_similarities[i] for i in top_indices]
-            top_rerank_scores = [rerank_scores[context_list.index(context)] for context in top_contexts]
+            top_rerank_scores = [rerank_scores[context_list.index(
+                context)] for context in top_contexts]
 
             # Use simple LLM to calculate context score
             llm_scores = await asyncio.gather(*[self.get_context_relevance_score(query, context) for context in top_contexts])
@@ -509,19 +446,21 @@ class RAGProcessor:
 
             # Combine scores for final ranking
             combined_scores = [llm_score * cos_sim * rerank_score
-                            for llm_score, cos_sim, rerank_score in zip(llm_scores, top_cos_similarities, top_rerank_scores)]
+                               for llm_score, cos_sim, rerank_score in zip(llm_scores, top_cos_similarities, top_rerank_scores)]
 
             combined_context_scores = list(zip(top_contexts, combined_scores))
-            sorted_combined_context_scores = sorted(combined_context_scores, key=lambda x: x[1], reverse=True)
-            logger.debug(f"Combined sorted context scores: {sorted_combined_context_scores}")
+            sorted_combined_context_scores = sorted(
+                combined_context_scores, key=lambda x: x[1], reverse=True)
+            logger.debug(
+                f"Combined sorted context scores: {sorted_combined_context_scores}")
 
-            top_contexts = [context for context, _ in sorted_combined_context_scores[:top_n]]
+            top_contexts = [context for context,
+                            _ in sorted_combined_context_scores[:top_n]]
             logger.debug(f"Final top contexts: {top_contexts}")
         except Exception as e:
             logger.error(f"Error retrieving top n context: {e}")
 
         return top_contexts
-
 
     class _ContextRelevanceScore(BaseModel):
         score: int = Field(
