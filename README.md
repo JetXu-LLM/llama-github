@@ -17,12 +17,19 @@ Here's a simple example of how to use llama-github:
 from llama_github import GithubRAG
 
 # Initialize GithubRAG with your credentials
-rag = GithubRAG(github_access_token="your_github_access_token",
-                openai_api_key="your_openai_api_key")
+github_rag = GithubRAG(
+    github_access_token="your_github_access_token", 
+    openai_api_key="your_openai_api_key", # Optional in Simple Mode
+    huggingface_token="your_huggingface_token", # Optional
+    jina_api_key="your_jina_api_key" # Optional - unless you want high concurrency production deployment (s.jina.ai API will be used in llama-github)
+)
 
-# Retrieve context for a coding question
+# Retrieve context for a coding question (simple_mode is default false)
 query = "How to create a NumPy array in Python?"
-context = rag.retrieve_context(query)
+context = github_rag.retrieve_context(
+    query,
+    # simple_mode = True
+)
 
 print(context)
 ```
@@ -57,7 +64,7 @@ We welcome contributions to llama-github! Please see our [contributing guideline
 
 ## License
 
-This project is licensed under the terms of the MIT license. See the [LICENSE](LICENSE) file for more details.
+This project is licensed under the terms of the Apache 2.0 license. See the [LICENSE](LICENSE) file for more details.
 
 ## Contact
 
