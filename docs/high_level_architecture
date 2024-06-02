@@ -1,6 +1,6 @@
-<mxfile host="app.diagrams.net" modified="2024-06-02T16:21:51.256Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" etag="n7oyrOk87wOG1TZ0USlJ" version="24.4.13" type="github">
+<mxfile host="app.diagrams.net" modified="2024-06-02T16:26:15.891Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" etag="k8iPBy-B32dZqOXcxa1I" version="24.4.13" type="github">
   <diagram name="Page-1" id="nk7C2aG7mZHbm95cLRa7">
-    <mxGraphModel dx="1434" dy="2007" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="none" math="0" shadow="0">
+    <mxGraphModel dx="1434" dy="1800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" background="none" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -329,10 +329,10 @@
           <mxGeometry x="790" y="-154" width="60" height="30" as="geometry" />
         </mxCell>
         <mxCell id="pnXbStRkxsEUSPPXl3oL-107" value="&lt;font face=&quot;Comic Sans MS&quot; style=&quot;font-size: 10px;&quot;&gt;Jina ai Open source component&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=middle;labelPosition=center;verticalLabelPosition=middle;align=center;strokeColor=#00CC00;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="803" y="-82" width="139" height="29" as="geometry" />
+          <mxGeometry x="801" y="-81" width="139" height="29" as="geometry" />
         </mxCell>
         <mxCell id="pnXbStRkxsEUSPPXl3oL-108" value="&lt;font face=&quot;Comic Sans MS&quot; style=&quot;font-size: 10px;&quot;&gt;Github API Integration&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=middle;labelPosition=center;verticalLabelPosition=middle;align=center;strokeColor=#EA6B66;strokeWidth=2;" vertex="1" parent="1">
-          <mxGeometry x="803" y="-41" width="139" height="29" as="geometry" />
+          <mxGeometry x="801" y="-41" width="139" height="29" as="geometry" />
         </mxCell>
         <mxCell id="pnXbStRkxsEUSPPXl3oL-109" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Llama-github&lt;/h1&gt;&lt;p&gt;&lt;font face=&quot;Verdana&quot;&gt;An open-source Python library that empowers LLM Chatbots, AI Agents, and Auto-dev Agents to &lt;b&gt;conduct&lt;/b&gt; &lt;b&gt;Retrieval from actively selected GitHub public contents&lt;/b&gt; (Repository, Issue, Code). It Augments through LLMs and &lt;b&gt;Generates context for any coding question&lt;/b&gt;, in order to streamline the development of sophisticated AI-driven applications.&lt;/font&gt;&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" vertex="1" parent="1">
           <mxGeometry x="52" y="-132" width="571" height="120" as="geometry" />
