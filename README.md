@@ -55,6 +55,14 @@ For more advanced usage and examples, please refer to the [documentation](docs/u
 
 - **🛠️ Logging and Error Handling**: We understand the importance of smooth operations and easy troubleshooting. That's why llama-github comes equipped with comprehensive logging and error handling mechanisms. Gain deep insights into the library's behavior, quickly diagnose issues, and maintain a stable and reliable development workflow.
 
+## Acknowledgments
+
+We would like to express our gratitude to the following open-source projects for their support and contributions:
+
+- **[LangChain](https://github.com/langchain-ai/langchain)**: For providing the foundational framework that empowers the LLM prompting and processing capabilities in llama-github.
+- **[Jina.ai](https://github.com/jina-ai/reader)**: For offering s.jina.ai API and open source reranker and embedding models that enhance the accuracy and relevance of the generated contexts in llama-github.
+
+Their contributions have been instrumental in the development of llama-github, and we highly recommend checking out their projects for more innovative solutions.
 
 ## Contributing
 
@@ -66,7 +74,7 @@ This project is licensed under the terms of the Apache 2.0 license. See the [LIC
 
 ## Contact
 
-If you have any questions, suggestions, or feedback, please feel free to reach out to us at [Voldemort.xu@foxmail.com](mailto:Voldemort.xu@foxmail.com).
+If you have any questions, suggestions, or feedback, please feel free to reach out to us at [Jet Xu's email](mailto:Voldemort.xu@foxmail.com).
 
 ---
 
