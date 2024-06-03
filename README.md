@@ -5,7 +5,7 @@
 
 If you like this project or believe it has potential, please give it a ⭐️. Your support is our greatest motivation!
 
-## Description @ Architecture
+## Description & Architecture
 ![High Level Architecture](./docs/high_level_architecture.drawio.svg)
 
 ## Installation
