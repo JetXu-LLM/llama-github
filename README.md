@@ -3,6 +3,8 @@
 [![PyPI version](https://badge.fury.io/py/llama-github.svg)](https://badge.fury.io/py/llama-github)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
+If you like this project or believe it has potential, please give it a ⭐️. Your support is our greatest motivation!
+
 ## High level architecture
 ![High Level Architecture](./docs/high_level_architecture.drawio.svg)
 
