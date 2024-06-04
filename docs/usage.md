@@ -1,5 +1,3 @@
-Here's a detailed usage.md file based on your project code and best practices:
-
 # Usage
 
 This document provides a comprehensive guide on how to use the `llama-github` library effectively. It covers various aspects of the library, including initialization, context retrieval, and advanced usage.
@@ -105,16 +103,37 @@ Make sure to replace the placeholders with your actual credentials.
 
 ### Logging
 
-`llama-github` provides comprehensive logging to monitor the library's behavior and troubleshoot issues. You can configure the logging level during initialization:
+Certainly! Here's an enhanced version of the logging section that emphasizes `llama-github`'s adherence to best practices for Python libraries:
+
+## Logging
+
+`llama-github` follows the best practices for logging in Python libraries by seamlessly integrating with the developer's main application logger. This approach ensures that the library's logging behavior aligns with the overall logging strategy of the application, providing a consistent and unified logging experience.
+
+By default, `llama-github` does not configure its own logging settings to avoid interfering with the application's existing logging configuration. Instead, it respects the log levels and handlers set up by the developer in their main application.
+
+To enable logging in `llama-github`, you simply need to configure the logging in your main application using Python's built-in `logging` module. For example:
 
 ```python
 import logging
-from llama_github import configure_logging
 
-configure_logging(level=logging.INFO)
+# Configure the main application's logger
+logging.basicConfig(level=logging.INFO)
+
+# Your application code goes here
 ```
 
-This will enable logging at the specified level (e.g., `logging.INFO`, `logging.DEBUG`).
+In this example, the main application's logger is configured with a log level of `logging.INFO`. `llama-github` will automatically inherit this log level and emit log messages accordingly.
+
+If you wish to have more control over the logging behavior specific to `llama-github`, you can use the `configure_logging` function provided by the library:
+
+```python
+from llama_github import configure_logging
+
+# Configure llama-github's logger
+configure_logging(level=logging.DEBUG)
+```
+
+By leveraging the flexibility and configurability of Python's `logging` module, `llama-github` provides developers with the tools necessary to gain valuable insights into the library's behavior and quickly identify and resolve any issues that may arise.
 
 ## Repository Pool Caching
 
@@ -149,4 +168,4 @@ With its support for different authentication methods, customizable LLM integrat
 
 By following the usage guidelines outlined in this document and exploring the advanced features provided by `llama-github`, you can unlock the full potential of the library and enhance your development workflow.
 
-For more information and examples, please refer to the [README](../README.md) and the [API documentation](api_docs.md).
+For more information and examples, please refer to the [README](../README.md) and the [API documentation](api_reference.md).
