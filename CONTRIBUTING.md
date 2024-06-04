@@ -70,17 +70,3 @@ We value and appreciate all contributions to the llama-github project. Your cont
 If you have any questions or need further assistance, feel free to reach out to the project maintainers at [Voldemort.xu@foxmail.com](mailto:Voldemort.xu@foxmail.com).
 
 Thank you for your contributions and happy coding!
-```
-
-This CONTRIBUTING.md file covers the essential aspects of contributing to the llama-github project, including:
-
-- Code of Conduct
-- Getting Started
-- Development Setup
-- Contribution Guidelines
-- Issue Tracking
-- Pull Request Process
-- Code Review
-- License
-- Recognition
-- Contact
