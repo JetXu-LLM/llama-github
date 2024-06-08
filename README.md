@@ -60,6 +60,18 @@ For more advanced usage and examples, please refer to the [documentation](docs/u
 
 - **🛠️ Logging and Error Handling**: We understand the importance of smooth operations and easy troubleshooting. That's why llama-github comes equipped with comprehensive logging and error handling mechanisms. Gain deep insights into the library's behavior, quickly diagnose issues, and maintain a stable and reliable development workflow.
 
+## Vision and Roadmap
+
+### Vision
+
+Our vision is to become a pivotal module in the future of AI-driven development solutions, seamlessly integrating with GitHub to empower LLMs in automatically resolving complex coding tasks.
+
+![Vision Architecture](./docs/vision.drawio.svg)
+
+### Roadmap
+
+For a detailed view of our project roadmap, please visit our [Project Roadmap](https://github.com/users/JetXu-LLM/projects/2).
+
 ## Acknowledgments
 
 We would like to express our gratitude to the following open-source projects for their support and contributions:
