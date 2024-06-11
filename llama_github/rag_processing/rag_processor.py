@@ -209,15 +209,15 @@ class RAGProcessor:
             logger.error(f"Error in get_issue_search_criteria: {e}")
             return []
 
-    def _arrange_code_search_result(self, code_search_result: List[Dict]) -> List[Dict]:
+    def _arrange_code_search_result(self, code_search_result: List[Dict]) -> List[Dict[str, str]]:
         """
-        Arrange the result of code search into chunks suitable for LLM RAG contexts.
+        Arrange the result of Code search with metadata.
 
         Args:
-            code_search_result (list): the result of code search.
+            _arrange_code_search_result (dict): The result of Code search.
 
         Returns:
-            list: the arranged result of code search.
+            List[Dict[str, str]]: The arranged result of Code search with metadata.
         """
         arranged_results = []
 
@@ -291,15 +291,15 @@ class RAGProcessor:
         chunks = splitter.split_text(content)
         return chunks
 
-    def _arrange_issue_search_result(self, issue_search_result: dict) -> dict:
+    def _arrange_issue_search_result(self, issue_search_result: dict) -> List[Dict[str, str]]:
         """
-        arrange the result of issue search
+        Arrange the result of Issue search with metadata.
 
         Args:
-            issue_search_result (dict): the result of issue search.
+            _arrange_issue_search_result (dict): The result of Issue search.
 
         Returns:
-            dict: the arranged result of issue search.
+            List[Dict[str, str]]: The arranged result of Issue search with metadata.
         """
         arranged_results = []
 
@@ -316,15 +316,15 @@ class RAGProcessor:
 
         return arranged_results
 
-    def _arrange_repo_search_result(self, repo_search_result: dict) -> dict:
+    def _arrange_repo_search_result(self, repo_search_result: dict) -> List[Dict[str, str]]:
         """
-        arrange the result of repo search
+        Arrange the result of Repo search with metadata.
 
         Args:
-            repo_search_result (dict): the result of repo search.
+            _arrange_repo_search_result (dict): The result of Repo search.
 
         Returns:
-            dict: the arranged result of repo search.
+            List[Dict[str, str]]: The arranged result of Repo search with metadata.
         """
         arranged_results = []
 
