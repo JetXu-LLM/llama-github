@@ -51,6 +51,19 @@ Asynchronously retrieves relevant context from GitHub based on the provided quer
 
 - `List[str]`: A list of relevant context strings retrieved from GitHub.
 
+#### `answer_with_context(self, query: str, contexts: Optional[List[str]] = None) -> Any`
+
+Answers a given query using previously retrieved or dynamically obtained context(s).
+
+##### Parameters
+
+- `query` (str): The user's question or query string.
+- `contexts` (List[str], optional): A list of context strings. If `None` is provided, context will be retrieved dynamically. Defaults to `None`.
+
+##### Returns
+
+- The answer generated in response to the query, the type of which may vary depending on the RAG processor implementation.
+
 ## `GitHubAppCredentials` Class
 
 The `GitHubAppCredentials` class represents the credentials required for authenticating with a GitHub App.
