@@ -209,20 +209,21 @@ class RAGProcessor:
             logger.error(f"Error in get_issue_search_criteria: {e}")
             return []
 
-    def _arrange_code_search_result(self, code_search_result: List[Dict]) -> List[Dict]:
+    def _arrange_code_search_result(self, code_search_result: List[Dict]) -> List[Dict[str, str]]:
         """
-        Arrange the result of code search into chunks suitable for LLM RAG contexts.
+        Arrange the result of Code search with metadata.
 
         Args:
-            code_search_result (list): the result of code search.
+            _arrange_code_search_result (dict): The result of Code search.
 
         Returns:
-            list: the arranged result of code search.
+            List[Dict[str, str]]: The arranged result of Code search with metadata.
         """
         arranged_results = []
 
         for result in code_search_result:
             content = result['content']
+            url = result.get('url', '')
 
             # Split content into chunks
             chunks = self._split_content_into_chunks(
@@ -249,7 +250,7 @@ class RAGProcessor:
                     f"programming language is: {language}\n\n"
                     f"{chunk}"
                 )
-                arranged_results.append(chunk_text)
+                arranged_results.append({'context': chunk_text, 'url': url})
 
         return arranged_results
 
@@ -290,173 +291,192 @@ class RAGProcessor:
         chunks = splitter.split_text(content)
         return chunks
 
-    def _arrange_issue_search_result(self, issue_search_result: dict) -> dict:
+    def _arrange_issue_search_result(self, issue_search_result: dict) -> List[Dict[str, str]]:
         """
-        arrange the result of issue search
+        Arrange the result of Issue search with metadata.
 
         Args:
-            issue_search_result (dict): the result of issue search.
+            _arrange_issue_search_result (dict): The result of Issue search.
 
         Returns:
-            dict: the arranged result of issue search.
+            List[Dict[str, str]]: The arranged result of Issue search with metadata.
         """
         arranged_results = []
 
         for result in issue_search_result:
             content = result['issue_content']
+            html_url = result.get('html_url', '')
 
             # Split content into chunks
             chunks = self._split_content_into_chunks(
                 content, max_tokens=config.get('issue_chunk_size'))
 
             for chunk in chunks:
-                arranged_results.append(chunk)
+                arranged_results.append({'context': chunk, 'url': url})
 
         return arranged_results
 
-    def _arrange_repo_search_result(self, repo_search_result: dict) -> dict:
+    def _arrange_repo_search_result(self, repo_search_result: dict) -> List[Dict[str, str]]:
         """
-        arrange the result of repo search
+        Arrange the result of Repo search with metadata.
 
         Args:
-            repo_search_result (dict): the result of repo search.
+            _arrange_repo_search_result (dict): The result of Repo search.
 
         Returns:
-            dict: the arranged result of repo search.
+            List[Dict[str, str]]: The arranged result of Repo search with metadata.
         """
         arranged_results = []
 
         for result in repo_search_result:
+            index = result['index']
+            full_name = result['full_name']
             content = result['content']
+            # Допустим, что repo_search_result включает в себя html_url.
+            url = result.get('html_url', f'https://github.com/{full_name}')
+
+            results_with_index.append({
+                'index': index,
+                'full_name': full_name,
+                'content': content,
+                'url': url,  # Добавление URL репозитория в результирующие данные
+            })
 
             # Split content into chunks
             chunks = self._split_content_into_chunks(
                 content, max_tokens=config.get('repo_chunk_size'))
 
             for chunk in chunks:
-                arranged_results.append(chunk)
+                arranged_results.append({'context': chunk, 'url': url})
 
         return arranged_results
 
-    def _arrange_google_search_result(self, google_search_result: dict) -> dict:
+    def _arrange_google_search_result(self, google_search_result: dict) -> List[Dict[str, str]]:
         """
-        arrange the result of google search
+        Arrange the result of Google search with metadata.
 
         Args:
-            google_search_result (dict): the result of google search.
+            google_search_result (dict): The result of Google search.
 
         Returns:
-            dict: the arranged result of google search.
+            List[Dict[str, str]]: The arranged result of Google search with metadata.
         """
         arranged_results = []
 
         for result in google_search_result:
             content = result['content']
+            url = result.get('url', '')  # Extract the URL if available
 
             # Split content into chunks
-            chunks = self._split_content_into_chunks(
-                content, max_tokens=config.get('google_chunk_size'))
+            chunks = self._split_content_into_chunks(content, max_tokens=config.get('google_chunk_size'))
 
             for chunk in chunks:
-                arranged_results.append(chunk)
+                arranged_results.append({'context': chunk, 'url': url})
 
         return arranged_results
 
-    def arrange_context(self, code_search_result: Optional[dict] = None, issue_search_result: Optional[dict] = None, repo_search_result: Optional[dict] = None, google_search_result: Optional[dict] = None) -> dict:
+    def arrange_context(self, code_search_result: Optional[dict] = None, issue_search_result: Optional[dict] = None,
+                        repo_search_result: Optional[dict] = None, google_search_result: Optional[dict] = None) -> List[
+        Dict[str, str]]:
         """
-        arrange the context before RAG
+        Arrange the context before RAG with metadata.
 
         Args:
-            code_search_result (dict, optional): the result of code search. Defaults to None.
-            issue_search_result (dict, optional): the result of issue search. Defaults to None.
-            repo_search_result (dict, optional): the result of repo search. Defaults to None.
-            google_search_result (dict, optional): the result of google search. Defaults to None.
+            code_search_result (dict, optional): The result of code search. Defaults to None.
+            issue_search_result (dict, optional): The result of issue search. Defaults to None.
+            repo_search_result (dict, optional): The result of repo search. Defaults to None.
+            google_search_result (dict, optional): The result of Google search. Defaults to None.
 
         Returns:
-            dict: the arranged context.
+            List[Dict[str, str]]: The arranged context with metadata.
         """
         context = []
         if code_search_result:
-            context.extend(
-                self._arrange_code_search_result(code_search_result))
+            context.extend(self._arrange_code_search_result(code_search_result))
         if issue_search_result:
-            context.extend(
-                self._arrange_issue_search_result(issue_search_result))
+            context.extend(self._arrange_issue_search_result(issue_search_result))
         if repo_search_result:
-            context.extend(
-                self._arrange_repo_search_result(repo_search_result))
+            context.extend(self._arrange_repo_search_result(repo_search_result))
         if google_search_result:
-            context.extend(
-                self._arrange_google_search_result(google_search_result))
+            context.extend(self._arrange_google_search_result(google_search_result))
         return context
 
-    async def retrieve_topn_contexts(self, context_list: List[str], query: str, answer: Optional[str] = None, top_n: Optional[int] = 5) -> List[str]:
+    async def retrieve_topn_contexts(self, context_list: List[Dict[str, str]], query: str, answer: Optional[str] = None,
+                                     top_n: Optional[int] = 5) -> List[Dict[str, str]]:
         """
-        Retrieve top n context strings from the context list.
+        Retrieve top n context dictionaries from the context list.
 
         Args:
-            context_list (List[str]): List of context strings to retrieve top n from.
+            context_list (List[Dict[str, str]]): List of context dictionaries to retrieve top n from.
+                Each dictionary should have at least 'context' and 'url' keys.
             query (str): The query string.
             answer (Optional[str]): The answer string (optional).
             top_n (Optional[int]): Number of top context strings to retrieve (default: 5).
 
         Returns:
-            List[str]: A list of top n context strings.
+            List[Dict[str, str]]: A list of top n context dictionaries.
         """
         top_contexts = []
         try:
             reranker = self.llm_manager.get_rerank_model()
 
-            sentence_pairs = [[query, doc] for doc in context_list]
+            # Extract contexts from the dictionaries
+            contexts = [context_item['context'] for context_item in context_list]
+
+            # Create sentence pairs for reranking
+            sentence_pairs = [[query, doc] for doc in contexts]
             rerank_scores = reranker.compute_score(sentence_pairs)
 
-            # Zip scores with contexts
+            # Zip scores with context dictionaries
             scored_contexts = list(zip(rerank_scores, context_list))
             sorted_scored_contexts = sorted(
                 scored_contexts, key=lambda x: x[0], reverse=True)
 
-            # Extract top 3*top_n contexts after rerank
-            selected_context = [context for score, context in sorted_scored_contexts[:min(
-                top_n*3, len(sorted_scored_contexts))]]
+            # Extract top 3*top_n context dictionaries after rerank
+            selected_contexts = [context for score, context in
+                                 sorted_scored_contexts[:min(top_n * 3, len(sorted_scored_contexts))]]
 
             # If there are too few contexts, skip embedding comparison step
-            if len(selected_context) < top_n*2:
-                return selected_context[:min(top_n, len(selected_context))]
+            if len(selected_contexts) < top_n * 2:
+                return selected_contexts[:min(top_n, len(selected_contexts))]
 
-            # Calculate embedding to select top 2*top_n
+            # Calculate embeddings to select top 2*top_n
             logger.debug("Embedding start...")
             embedding_model = self.llm_manager.get_embedding_model()
-            query_embedding = embedding_model.encode(
-                query + "\n" + answer if answer is not None else "")
-            context_embeddings = [embedding_model.encode(
-                context) for context in selected_context]
+            query_embedding = embedding_model.encode(query + "\n" + answer if answer is not None else "")
+            context_embeddings = [embedding_model.encode(context_item['context']) for context_item in selected_contexts]
 
-            cos_similarities = [(query_embedding @ context_embedding.T) / (norm(query_embedding) * norm(context_embedding))
-                                for context_embedding in context_embeddings]
+            # Calculate cosine similarities
+            cos_similarities = [
+                (query_embedding @ context_embedding.T) / (norm(query_embedding) * norm(context_embedding))
+                for context_embedding in context_embeddings]
 
-            top_indices = np.argsort(cos_similarities)[-(top_n*2):][::-1]
-            top_contexts = [selected_context[i] for i in top_indices]
+            # Get top indices based on cosine similarities
+            top_indices = np.argsort(cos_similarities)[-(top_n * 2):][::-1]
+            top_contexts = [selected_contexts[i] for i in top_indices]
             top_cos_similarities = [cos_similarities[i] for i in top_indices]
-            top_rerank_scores = [rerank_scores[context_list.index(
-                context)] for context in top_contexts]
+            top_rerank_scores = [rerank_scores[contexts.index(context_item['context'])] for context_item in
+                                 top_contexts]
 
-            # Use simple LLM to calculate context score
-            llm_scores = await asyncio.gather(*[self.get_context_relevance_score(query, context) for context in top_contexts])
+            # Use simple LLM to calculate context relevance scores
+            llm_scores = await asyncio.gather(
+                *[self.get_context_relevance_score(query, context_item['context']) for context_item in top_contexts])
             logger.debug(f"Simple LLM scores: {llm_scores}")
 
             # Combine scores for final ranking
             combined_scores = [llm_score * cos_sim * rerank_score
-                               for llm_score, cos_sim, rerank_score in zip(llm_scores, top_cos_similarities, top_rerank_scores)]
+                               for llm_score, cos_sim, rerank_score in
+                               zip(llm_scores, top_cos_similarities, top_rerank_scores)]
 
             combined_context_scores = list(zip(top_contexts, combined_scores))
             sorted_combined_context_scores = sorted(
                 combined_context_scores, key=lambda x: x[1], reverse=True)
-            logger.debug(
-                f"Combined sorted context scores: {sorted_combined_context_scores}")
+            logger.debug(f"Combined sorted context scores: {sorted_combined_context_scores}")
 
-            top_contexts = [context for context,
-                            _ in sorted_combined_context_scores[:top_n]]
+            # Extract top n context dictionaries
+            top_contexts = [context for context, _ in sorted_combined_context_scores[:top_n]]
             logger.debug(f"Final top contexts: {top_contexts}")
+
         except Exception as e:
             logger.error(f"Error retrieving top n context: {e}")
 
