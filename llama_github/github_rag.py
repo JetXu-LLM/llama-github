@@ -237,9 +237,12 @@ class GithubRAG:
             seen = set()
             unique_list = []
             for d in result:
-                value = d["url"]
-                if value not in seen:
-                    seen.add(value)
+                api_url = d["url"]
+                if api_url not in seen:
+                    seen.add(api_url)
+                    # Transform the API URL to the official GitHub issue webpage URL
+                    html_url = api_url.replace('api.github.com/repos', 'github.com').replace('issues/', 'issues/')
+                    d["url"] = html_url
                     unique_list.append(d)
             result = unique_list
 
@@ -330,6 +333,7 @@ class GithubRAG:
                             results_with_index.append({
                                 'index': index,
                                 'full_name': repository.full_name,
+                                'url': repository.html_url,
                                 'content': repo_readme,
                             })
                         # if repo_simple_structure:
