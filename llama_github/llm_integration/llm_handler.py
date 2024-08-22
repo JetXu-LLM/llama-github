@@ -8,10 +8,9 @@ from langchain_core.output_parsers import StrOutputParser
 from llama_github.config.config import config
 from llama_github.logger import logger
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.pydantic_v1 import BaseModel
+from pydantic import BaseModel
 from typing import Optional
 from langchain_openai import output_parsers
-
 
 class LLMHandler:
     def __init__(self, llm_manager: Optional[LLMManager] = None):
@@ -80,7 +79,6 @@ class LLMHandler:
 
                 # Format the prompt with the provided parameters.
                 formatted_prompt = chat_prompt.format_prompt(**prompt_params)
-                logger.debug(f"Formatted prompt: {formatted_prompt}")
                 # Determine the processing chain based on the presence of an output structure.
                 if output_structure is not None:
                     chain = llm.with_structured_output(output_structure)
@@ -92,7 +90,7 @@ class LLMHandler:
                     response = await chain.ainvoke(formatted_prompt.to_messages())
                 except Exception as e:
                     logger.exception(
-                        f"Call llm with #{human_question}# generated an exception:{e}")
+                        f"Call {'simple ' if simple_llm else ''}llm with #{human_question}# generated an exception:{e}")
                     if output_structure is not None:
                         response = await chain.ainvoke(formatted_prompt.to_messages())
                 return response

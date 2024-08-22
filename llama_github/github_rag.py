@@ -1,11 +1,10 @@
 from llama_github.logger import logger
 from llama_github.config.config import config
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
 from pprint import pformat
 
 from llama_github.llm_integration.initial_load import LLMManager
-from llama_github.llm_integration.llm_handler import LLMHandler
 from llama_github.rag_processing.rag_processor import RAGProcessor
 
 from llama_github.github_integration.github_auth_manager import GitHubAuthManager
@@ -32,6 +31,7 @@ class GithubRAG:
     def __init__(self, github_access_token: Optional[str] = None,
                  github_app_credentials: Optional[GitHubAppCredentials] = None,
                  openai_api_key: Optional[str] = None,
+                 mistral_api_key: Optional[str] = None,
                  huggingface_token: Optional[str] = None,
                  jina_api_key: Optional[str] = None,
                  open_source_models_hg_dir: Optional[str] = None,
@@ -92,7 +92,7 @@ class GithubRAG:
             logger.debug(
                 "Initializing llm manager, embedding model & reranker model...")
             self.llm_manager = LLMManager(
-                openai_api_key, huggingface_token, open_source_models_hg_dir, embedding_model, rerank_model, llm)
+                openai_api_key, mistral_api_key, huggingface_token, open_source_models_hg_dir, embedding_model, rerank_model, llm)
             logger.debug(
                 "LLM Manager, Embedding model & Reranker model Initialized.")
 
@@ -112,8 +112,8 @@ class GithubRAG:
         try:
             logger.info("Retrieving context...")
             if simple_mode:
-                #In simple mode, only a Google search will be conducted based on the user's question.
-                #This model is not suitable for long questions (e.g., questions with more than 20 words).
+                # In simple mode, only a Google search will be conducted based on the user's question.
+                # This model is not suitable for long questions (e.g., questions with more than 20 words).
                 task_google_search = asyncio.create_task(
                     self.google_search_retrieval(query=query))
                 await asyncio.gather(task_google_search)
@@ -121,7 +121,7 @@ class GithubRAG:
                     f"Google search: {str(len(task_google_search.result()))}")
                 context_list = self.rag_processor.arrange_context(
                     google_search_result=task_google_search.result())
-                if len(context_list)>0:
+                if len(context_list) > 0:
                     topn_contexts = await self.rag_processor.retrieve_topn_contexts(
                         context_list=context_list, query=query, top_n=config.get("top_n_contexts"))
             else:
@@ -166,7 +166,7 @@ class GithubRAG:
                     repo_search_result=task_repo_search.result(),
                     google_search_result=task_google_search.result())
 
-                if len(context_list)>0:
+                if len(context_list) > 0:
                     topn_contexts = await self.rag_processor.retrieve_topn_contexts(
                         context_list=context_list, query=query, answer=analyzed_strategy[1], top_n=config.get("top_n_contexts"))
 
@@ -241,7 +241,8 @@ class GithubRAG:
                 if api_url not in seen:
                     seen.add(api_url)
                     # Transform the API URL to the official GitHub issue webpage URL
-                    html_url = api_url.replace('api.github.com/repos', 'github.com').replace('issues/', 'issues/')
+                    html_url = api_url.replace(
+                        'api.github.com/repos', 'github.com').replace('issues/', 'issues/')
                     d["url"] = html_url
                     unique_list.append(d)
             result = unique_list
@@ -350,3 +351,56 @@ class GithubRAG:
         except Exception as e:
             logger.error(f"Error retrieving repos search: {e}")
         return results_with_index
+
+    def answer_with_context(self, query: str, contexts: Optional[List[Dict[str, Any]]] = None, simple_mode=False) -> str:
+        """
+        Generate an answer based on the given query and optional contexts.
+
+        This method can be called in different environments (Jupyter notebook, 
+        synchronous Python program, asynchronous Python program) and will 
+        handle the async call appropriately.
+
+        Args:
+            query (str): The user's query.
+            contexts (Optional[List[Dict[str, Any]]]): Optional list of context dictionaries.
+                Each dictionary should contain 'content' and 'url' keys.
+
+        Returns:
+            str: The generated answer.
+        """
+        self.loop = asyncio.get_event_loop()
+        ipython = get_ipython()
+        if ipython and ipython.has_trait('kernel'):
+            logger.debug("Running in Jupyter notebook, nest_asyncio applied.")
+            import nest_asyncio
+            nest_asyncio.apply()
+            return asyncio.run(self.async_answer_with_context(query, contexts, simple_mode))
+        if self.loop.is_running():
+            return asyncio.ensure_future(self.async_answer_with_context(query, contexts, simple_mode))
+        return self.loop.run_until_complete(self.async_answer_with_context(query, contexts, simple_mode))
+
+    async def async_answer_with_context(self, query: str, contexts: Optional[List[Dict[str, Any]]] = None, simple_mode=False) -> str:
+        """
+        Asynchronously generate an answer based on the given query and optional contexts.
+
+        Args:
+            query (str): The user's query.
+            contexts (Optional[List[Dict[str, Any]]]): Optional list of context dictionaries.
+                Each dictionary should contain 'content' and 'url' keys.
+
+        Returns:
+            str: The generated answer.
+        """
+        if contexts is None:
+            contexts = await self.async_retrieve_context(query, simple_mode)
+            logger.debug(f"Retrieved contexts: {contexts}")
+        context_contents = [context['context'] for context in contexts]
+        context_urls = [context['url'] for context in contexts]
+
+        answer = await self.rag_processor.llm_handler.ainvoke(
+            human_question=query,
+            context=context_contents,
+            # context_urls=context_urls
+        )
+
+        return answer

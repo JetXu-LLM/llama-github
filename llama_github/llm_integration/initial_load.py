@@ -5,6 +5,7 @@ from threading import Lock
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain_mistralai.chat_models import ChatMistralAI
 
 from llama_github.config.config import config
 from llama_github.logger import logger
@@ -33,6 +34,7 @@ class LLMManager:
 
     def __init__(self,
                  openai_api_key: Optional[str] = None,
+                 mistral_api_key: Optional[str] = None,
                  huggingface_token: Optional[str] = None,
                  open_source_models_hg_dir: Optional[str] = None,
                  embedding_model: Optional[str] = config.get(
@@ -48,11 +50,16 @@ class LLMManager:
         if llm is not None:
             self.llm = llm
             self.model_type = "Custom_langchain_llm"
+        elif mistral_api_key is not None and mistral_api_key != "" and self.llm is None:
+            logger.info("Initializing Mistral API...")
+            self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-large-latest")
+            self.llm_simple = ChatMistralAI(mistral_api_key=mistral_api_key, model="open-mistral-nemo")
+            self.model_type = "OpenAI"
         elif openai_api_key is not None and openai_api_key != "" and self.llm is None:
             logger.info("Initializing OpenAI API...")
             self.llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4-turbo")
             self.llm_simple = ChatOpenAI(
-                api_key=openai_api_key, model="gpt-3.5-turbo")
+                api_key=openai_api_key, model="gpt-4o-mini")
             self.model_type = "OpenAI"
         # Initialize for Open Source Models
         elif open_source_models_hg_dir is not None and open_source_models_hg_dir != "" and self.llm is None:
