@@ -245,6 +245,85 @@ class ExtendedGithub(Github):
         except Exception as err:
             logger.error(f"An error occurred: {err}")
 
+    def get_pr_files(self, repo_full_name: str, pr_number: int) -> list:
+        """
+        Get the files of a pull request on GitHub using the GitHub API.
+
+        Parameters:
+        repo_full_name (str): The full name of the repository (e.g., 'octocat/Hello-World').
+        pr_number (int): The pull request number.
+
+        Returns:
+        list: The files of the pull request in list format.
+        """
+        url = f'https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/files'
+        headers = {
+            'Accept': 'application/vnd.github.v3+json',
+            'Authorization': f'token {self.access_token}'
+        }
+
+        # Retry strategy
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+
+        try:
+            response = http.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except HTTPError as http_err:
+            logger.error(f"HTTP error occurred: {http_err}")
+        except RequestException as req_err:
+            logger.error(f"Request error occurred: {req_err}")
+        except Exception as err:
+            logger.error(f"An error occurred: {err}")
+        return []
+
+    def get_pr_comments(self, repo_full_name: str, pr_number: int) -> list:
+        """
+        Get the comments of a pull request on GitHub using the GitHub API.
+
+        Parameters:
+        repo_full_name (str): The full name of the repository (e.g., 'octocat/Hello-World').
+        pr_number (int): The pull request number.
+
+        Returns:
+        list: The comments of the pull request in list format.
+        """
+        url = f'https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments'
+        headers = {
+            'Accept': 'application/vnd.github.v3+json',
+            'Authorization': f'token {self.access_token}'
+        }
+
+        # Retry strategy
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("https://", adapter)
+
+        try:
+            response = http.get(url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+        except HTTPError as http_err:
+            logger.error(f"HTTP error occurred: {http_err}")
+        except RequestException as req_err:
+            logger.error(f"Request error occurred: {req_err}")
+        except Exception as err:
+            logger.error(f"An error occurred: {err}")
+        return []
 
 # Example usage:
 if __name__ == "__main__":

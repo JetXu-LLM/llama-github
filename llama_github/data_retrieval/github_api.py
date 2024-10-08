@@ -5,6 +5,7 @@ from llama_github.logger import logger
 from llama_github.github_integration.github_auth_manager import ExtendedGithub
 from llama_github.config.config import config
 import re
+from typing import Any, Dict, List
 
 
 class GitHubAPIHandler:
@@ -81,6 +82,26 @@ class GitHubAPIHandler:
         file_content = repository_obj.get_file_content(
             code_search_result['path'])
         return repository_obj, file_content
+    
+    async def get_pr_files(self, repo: Repository, pr_number: int) -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/repos/{repo.full_name}/pulls/{pr_number}/files"
+        headers = {"Authorization": f"token {self.token}"}
+        async with self.session.get(url, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                logger.error(f"Failed to get PR files: {response.status}")
+                return []
+
+    async def get_pr_comments(self, repo: Repository, pr_number: int) -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/repos/{repo.full_name}/issues/{pr_number}/comments"
+        headers = {"Authorization": f"token {self.token}"}
+        async with self.session.get(url, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                logger.error(f"Failed to get PR comments: {response.status}")
+                return []
 
     def search_code(self, query, repo_full_name=None):
         """

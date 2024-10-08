@@ -1,15 +1,21 @@
-# To do list:
-# 1. Add issues to the Repository class.
-# 2. Add a method to get issues for a repository.
-
 from github import GithubException
 from threading import Lock, Event, Thread
 from datetime import datetime, timezone
-import time
+
+from typing import Optional, Dict, Any, List
 from llama_github.logger import logger
 from llama_github.github_integration.github_auth_manager import ExtendedGithub
-import re
+from llama_github.utils import DiffGenerator
 
+import time
+import re
+import json
+from dateutil import parser
+from datetime import timezone
+import base64
+import ast
+
+from llama_github.utils import DiffGenerator, CodeAnalyzer
 
 class Repository:
     def __init__(self, full_name, github_instance: ExtendedGithub, **kwargs):
@@ -50,6 +56,7 @@ class Repository:
         self._structure_lock = Lock()
         self._file_contents_lock = Lock()
         self._issue_lock = Lock()
+        self._pr_lock = Lock()
         self._readme_lock = Lock()
         self._repo_lock = Lock()
 
@@ -66,6 +73,7 @@ class Repository:
         self._file_contents = {}  # Singleton pattern for file contents
         self._issues = {}  # Singleton pattern for file contents
         self._readme = None  # Singleton pattern for README content
+        self._prs = {}  # Singleton pattern for PR content
 
     def update_last_read_time(self):
         self.last_read_time = datetime.now(timezone.utc)
@@ -86,7 +94,7 @@ class Repository:
                         self._readme = None
         self.update_last_read_time()
         return self._readme
-    
+
     @property
     def repo(self):
         return self.get_repo()
@@ -132,25 +140,48 @@ class Repository:
                         self._structure = None
         self.update_last_read_time()
         return self._structure
+    
+    def get_file_content(self, file_path: str, sha: Optional[str] = None) -> Optional[str]:
+        """
+        Retrieves the content of a file using a singleton design pattern with improved encoding handling.
 
-    def get_file_content(self, file_path) -> str:
+        This method first checks if the file content is already cached. If not, it fetches the content
+        from the GitHub repository, handles potential encoding issues, and caches the result.
+
+        :param file_path: The path to the file in the repository.
+        :param sha: The commit SHA. If None, the latest version is fetched.
+        :return: The file content as a string or None if not found or on error.
         """
-        Retrieves the content of a file using a singleton design pattern.
-        """
-        if file_path not in self._file_contents:  # Check if file content has already been fetched
-            with self._file_contents_lock:  # Locking for write action
-                if file_path not in self._file_contents:  # Check if file content has already been fetched after get lock
+        file_key = f"{file_path}/{sha}" if sha is not None else file_path
+
+        if file_key not in self._file_contents:  # Check if file content has already been fetched
+            with self._file_contents_lock:  # Locking for thread-safe write action
+                if file_key not in self._file_contents:  # Double-check after acquiring the lock
                     try:
-                        file_content = self.repo.get_contents(file_path)
-                        self._file_contents[file_path] = file_content.decoded_content.decode(
-                            "utf-8")
+                        if sha is not None:
+                            file_content = self.repo.get_contents(file_path, ref=sha)
+                        else:
+                            file_content = self.repo.get_contents(file_path)
+                        
+                        # Improved encoding handling
+                        if file_content.encoding == 'base64':
+                            decoded_content = base64.b64decode(file_content.content).decode('utf-8')
+                        else:
+                            decoded_content = file_content.decoded_content.decode('utf-8')
+                        
+                        self._file_contents[file_key] = decoded_content
                     except GithubException as e:
                         logger.exception(
-                            f"Error getting file content for {file_path} in repository {self.full_name}:")
+                            f"Error getting file content for {file_key} in repository {self.full_name}:")
                         return None
-        self.update_last_read_time()
-        return self._file_contents[file_path]
+                    except UnicodeDecodeError as e:
+                        logger.exception(
+                            f"Error decoding file content for {file_key} in repository {self.full_name}:")
+                        return None
 
+        self.update_last_read_time()
+        return self._file_contents.get(file_key)
+    
     def get_issue_content(self, number, issue=None) -> str:
         """
         Retrieves the content of a issue using a singleton design pattern.
@@ -208,6 +239,251 @@ class Repository:
                         return None
         self.update_last_read_time()
         return self._issues[number]
+    
+    def extract_related_issues(self, pr_data: Dict[str, Any]) -> List[int]:
+        """
+        Extracts related issue numbers from the PR description and other fields.
+
+        :param pr_data: The pull request data dictionary.
+        :return: A list of related issue numbers.
+        """
+        patterns = [
+            rf'https://github\.com/{re.escape(self.full_name)}/issues/(\d+)',
+            r'(?:^|\s)#(\d+)',
+            r'(?:^|\s)(\d+)(?:\s|$)',
+        ]
+        issues = set()
+        # Convert PR data to JSON string for pattern matching
+        pr_description = json.dumps(pr_data, default=str)
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, pr_description)
+            issues.update(int(match) for match in matches)
+        
+        return list(issues)
+
+    def get_issue_contents(self, issue_numbers: List[int], pr_number: int) -> List[Dict[str, Any]]:
+        """
+        Retrieves contents for a list of issue numbers, excluding the PR number.
+
+        :param issue_numbers: List of issue numbers.
+        :param pr_number: The PR number to exclude.
+        :return: A list of issue contents.
+        """
+        return [
+            {
+                "issue_number": issue_number,
+                "issue_content": self.get_issue_content(issue_number)
+            }
+            for issue_number in issue_numbers
+            if issue_number != pr_number
+        ]
+    
+    def to_isoformat(self, dt: datetime) -> Optional[str]:
+        """
+        Converts a datetime object to ISO 8601 format with UTC timezone.
+
+        :param dt: The datetime object to convert.
+        :return: ISO 8601 formatted string or None if dt is None.
+        """
+        if dt:
+            return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+        return None
+
+    def get_pr_content(self, number, pr=None, context_lines=10) -> Dict[str, Any]:
+        """
+        Retrieves and processes the content of a pull request.
+
+        :param number: The PR number.
+        :param pr: Optional PR object.
+        :param context_lines: Number of context lines for diffs.
+        :return: A dictionary containing detailed PR information.
+        """
+        if number not in self._prs:  # Check if issue has already been fetched
+            with self._pr_lock:  # Locking for write action
+                if number not in self._prs:  # Check if issue has already been fetched after get lock
+                    try:
+                        logger.debug(f"Processing PR #{number}")
+                        if pr is None:
+                            pr = self.repo.get_pull(number)
+                        pr_files = self._github.get_pr_files(self.full_name, pr.number)
+                        pr_comments = self._github.get_pr_comments(self.full_name, pr.number)
+
+                        # Prepare PR metadata with standardized time formats
+                        pr_data = {
+                            "pr_metadata": {
+                                "number": pr.number,
+                                "title": pr.title,
+                                "description": pr.body,
+                                "author": pr.user.login,
+                                "author_association": pr.raw_data['author_association'],
+                                "created_at": self.to_isoformat(pr.created_at),
+                                "updated_at": self.to_isoformat(pr.updated_at),
+                                "merged_at": self.to_isoformat(pr.merged_at),
+                                "state": pr.state,
+                                "base_branch": pr.base.ref,
+                                "head_branch": pr.head.ref,
+                            },
+                            "related_issues": [],
+                            "file_changes": [],
+                            "ci_cd_results": [],
+                            "interactions": []
+                        }
+
+                        # Fetch CI/CD results
+                        try:
+                            last_commit = pr.get_commits().reversed[0]
+                            statuses = last_commit.get_statuses()
+                            ci_cd_results = {
+                                "state": None,  # We'll set this later
+                                "statuses": [],
+                                "check_runs": []
+                            }
+                            
+                            # Process statuses
+                            for status in statuses:
+                                if ci_cd_results["state"] is None:
+                                    ci_cd_results["state"] = status.state
+                                ci_cd_results["statuses"].append({
+                                    "context": status.context,
+                                    "state": status.state,
+                                    "description": status.description,
+                                    "target_url": status.target_url,
+                                    "created_at": self.to_isoformat(status.created_at),
+                                    "updated_at": self.to_isoformat(status.updated_at),
+                                })
+
+                            # Fetch check runs for detailed CI/CD outputs
+                            check_runs = last_commit.get_check_runs()
+                            for check_run in check_runs:
+                                ci_cd_results["check_runs"].append({
+                                    "name": check_run.name,
+                                    "status": check_run.status,
+                                    "conclusion": check_run.conclusion,
+                                    "started_at": self.to_isoformat(check_run.started_at) if check_run.started_at else None,
+                                    "completed_at": self.to_isoformat(check_run.completed_at) if check_run.completed_at else None,
+                                    "details_url": check_run.html_url,  # Changed from details_url to html_url
+                                })
+
+                            pr_data["ci_cd_results"] = ci_cd_results
+                        except GithubException as e:
+                            logger.exception(f"Error fetching CI/CD results for PR #{number}")
+                        except IndexError as e:
+                            logger.exception(f"No commits found for PR #{number}")
+
+                        # Combine comments and reviews, and sort by creation time
+                        pr_interactions = []
+
+                        # Process PR comments
+                        for comment in pr_comments:
+                            created_at_dt = parser.isoparse(comment["created_at"])
+                            formatted_created_at = self.to_isoformat(created_at_dt)
+                            pr_interactions.append({
+                                "type": "pr_comment",
+                                "author": comment["user"]["login"],
+                                "author_association": comment["author_association"],
+                                "content": comment["body"],
+                                "created_at": formatted_created_at,
+                                "comment_id": comment["id"]
+                            })
+
+                        # Process reviews and inline comments
+                        reviews = pr.get_reviews()
+                        review_comments = pr.get_review_comments()
+                        for review in reviews:
+                            pr_review = {
+                                "type": "review",
+                                "author": review.user.login,
+                                "author_association": review.raw_data['author_association'],
+                                "content": review.body,
+                                "state": review.state,
+                                "created_at": self.to_isoformat(review.submitted_at),
+                                "comment_id": review.id
+                            }
+                            # Process inline comments with threading
+                            for comment in review_comments:
+                                if comment.pull_request_review_id == review.id:
+                                    pr_review["type"] = "inline_comment"
+                                    pr_review["content"] = comment.body
+                                    pr_review["path"] = comment.path
+                                    pr_review["diff_hunk"] = comment.diff_hunk
+                            pr_interactions.append(pr_review)
+
+                        # Sort interactions by creation time
+                        pr_interactions.sort(key=lambda x: parser.isoparse(x["created_at"]))
+                        pr_data["interactions"] = pr_interactions
+
+                        # Extract related issues from PR description and comments
+                        related_issues = self.extract_related_issues(pr_data)
+                        pr_data['related_issues'] = self.get_issue_contents(related_issues, pr.number)
+
+                        # Process file changes
+                        dependency_files = ['requirements.txt', 'Pipfile', 'Pipfile.lock', 'setup.py']
+                        config_files = ['.env', 'settings.py', 'config.yaml', 'config.yml', 'config.json']
+                        for file in pr_files:
+                            file_path = file['filename']
+                            change_type = file['status']
+                            language = file.get('language', self.language)
+                            additions = file['additions']
+                            deletions = file['deletions']
+                            changes = file['changes']
+
+                            # Fetch file content for base and head versions
+                            if change_type == 'removed':
+                                base_content = self.get_file_content(file_path=file_path, sha=pr.base.sha)
+                                head_content = None
+                            elif change_type == 'added':
+                                base_content = None
+                                head_content = self.get_file_content(file_path=file_path, sha=pr.head.sha)
+                            else:
+                                base_content = self.get_file_content(file_path=file_path, sha=pr.base.sha)
+                                head_content = self.get_file_content(file_path=file_path, sha=pr.head.sha)
+
+                            # Generate custom diff with specified context lines
+                            custom_diff = DiffGenerator.generate_custom_diff(base_content, head_content, context_lines)
+
+                            # Categorize code changes
+                            change_categories = CodeAnalyzer.categorize_change(custom_diff)
+
+                            # Extract imports from head content
+                            related_modules = CodeAnalyzer.extract_imports(head_content) if language == 'Python' and head_content else []
+
+                            # Build file change entry
+                            file_change = {
+                                "file_path": file_path,
+                                "change_type": change_type,
+                                "diff": custom_diff,
+                                "language": language,
+                                "additions": additions,
+                                "deletions": deletions,
+                                "changes": changes,
+                                "change_categories": change_categories,
+                                "related_modules": related_modules
+                            }
+
+                            # Check for dependency changes
+                            if file_path in dependency_files:
+                                pr_data.setdefault("dependency_changes", []).append({
+                                    "file_path": file_path,
+                                    "content": head_content
+                                })
+
+                            # Check for configuration changes
+                            if file_path in config_files:
+                                pr_data.setdefault("config_changes", []).append({
+                                    "file_path": file_path,
+                                    "content": head_content
+                                })
+
+                            pr_data['file_changes'].append(file_change)
+                            logger.debug(f"Processed file: {file_path}")
+
+                        self._prs[number] = pr_data
+                        logger.debug(f"Collected details for PR #{number}: {pr.title}")
+                    except GithubException as e:
+                        logger.exception(f"Error getting PR content for #{number} in repository {self.full_name}")
+        self.update_last_read_time()
+        return self._prs[number]
 
     def __str__(self):
         """
@@ -232,6 +508,8 @@ class Repository:
             self._readme = None  # Reset the README content cache
         with self._repo_lock:
             self._repo = None  # Reset the Repo cache
+        with self._pr_lock:
+            self._prs = {}  # Reset the PR cache
 
 
 class RepositoryPool:
