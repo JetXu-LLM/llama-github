@@ -6,14 +6,11 @@ The `get_pr_content` method is a new feature in the `Repository` class of the ll
 ## Usage
 
 ```python
-from llama_github.github_entities import Repository
+from llama_github import GithubRAG
 
-# Assuming you have already initialized a Repository object
-repo = Repository("owner/repo_name", github_instance)
-
-# Retrieve PR content
-pr_number = 123
-pr_content = repo.get_pr_content(pr_number)
+github_rag=GithubRAG(github_access_token=github_access_token)
+repo = github_rag.RepositoryPool.get_repository("JetXu-LLM/llama-github")
+pr_content = repo.get_pr_content(number=15)
 ```
 
 ## Features

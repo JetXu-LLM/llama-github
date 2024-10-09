@@ -13,7 +13,6 @@ import json
 from dateutil import parser
 from datetime import timezone
 import base64
-import ast
 
 from llama_github.utils import DiffGenerator, CodeAnalyzer
 
