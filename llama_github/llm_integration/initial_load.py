@@ -1,5 +1,4 @@
 # initial_load.py
-import torch
 from typing import Optional, Any
 from threading import Lock
 from langchain_openai import ChatOpenAI
@@ -9,11 +8,6 @@ from langchain_mistralai.chat_models import ChatMistralAI
 
 from llama_github.config.config import config
 from llama_github.logger import logger
-
-from transformers import AutoModel
-from transformers import AutoModelForSequenceClassification
-from transformers import AutoTokenizer
-
 
 class LLMManager:
     _instance_lock = Lock()
@@ -74,6 +68,10 @@ class LLMManager:
             self.model_type = "Hubgingface"
             
         if not self.simple_mode:
+            import torch
+            from transformers import AutoModel
+            from transformers import AutoModelForSequenceClassification
+            from transformers import AutoTokenizer
             # initial model_kwargs
             if torch.cuda.is_available():
                 self.device = torch.device('cuda')
