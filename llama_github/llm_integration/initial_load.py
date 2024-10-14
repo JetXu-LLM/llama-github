@@ -19,11 +19,11 @@ class LLMManager:
     _instance_lock = Lock()
     _instance = None
     llm = None
-    # embedding_model = None
     rerank_model = None
     _initialized = False
     llm_simple = None
     tokenizer = None
+    embedding_model = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:  # First check (unlocked)
@@ -40,11 +40,14 @@ class LLMManager:
                  embedding_model: Optional[str] = config.get(
                      "default_embedding"),
                  rerank_model: Optional[str] = config.get("default_reranker"),
-                 llm: Any = None):
+                 llm: Any = None,
+                 simple_mode: bool = False):
         with self._instance_lock:   # Prevent re-initialization
             if self._initialized:
                 return
             self._initialized = True
+
+        self.simple_mode = simple_mode
 
         # Initialize for OpenAI GPT-4
         if llm is not None:
@@ -69,28 +72,31 @@ class LLMManager:
         elif self.llm is None:
             # default model is phi3_mini_128k
             self.model_type = "Hubgingface"
+            
+        if not self.simple_mode:
+            # initial model_kwargs
+            if torch.cuda.is_available():
+                self.device = torch.device('cuda')
+            elif torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+            else:
+                self.device = torch.device('cpu')
 
-        # initial model_kwargs
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        elif torch.backends.mps.is_available():
-            self.device = torch.device('mps')
+            # initial embedding_model
+            if self.tokenizer is None:
+                logger.info(f"Initializing {embedding_model}...")
+                self.tokenizer = AutoTokenizer.from_pretrained(embedding_model)
+                self.embedding_model = AutoModel.from_pretrained(
+                    embedding_model, trust_remote_code=True).to(self.device)
+
+            # initial rerank_model
+            if self.rerank_model is None:
+                logger.info(f"Initializing {rerank_model}...")
+                self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
+                    rerank_model, num_labels=1, trust_remote_code=True
+                ).to(self.device)
         else:
-            self.device = torch.device('cpu')
-
-        # initial embedding_model
-        if self.tokenizer is None:
-            logger.info(f"Initializing {embedding_model}...")
-            self.tokenizer = AutoTokenizer.from_pretrained(embedding_model)
-            self.embedding_model = AutoModel.from_pretrained(
-                embedding_model, trust_remote_code=True).to(self.device)
-
-        # initial rerank_model
-        if self.rerank_model is None:
-            logger.info(f"Initializing {rerank_model}...")
-            self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
-                rerank_model, num_labels=1, trust_remote_code=True
-            ).to(self.device)
+            logger.info("Simple mode enabled. Skipping embedding and rerank model initialization.")
 
     def get_llm(self):
         return self.llm

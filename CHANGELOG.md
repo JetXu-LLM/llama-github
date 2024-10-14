@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2024-10-14
+
+### Added
+- Modified `LLMManager` class to skip loading embedding and reranker models when `simple_mode` is enabled
+- Updated `retrieve_context` method to use instance's `simple_mode` by default, with option to override
+
+### Improved
+- Faster initialization process when `simple_mode` is enabled, skipping embedding and reranker model loading
+- More flexible usage of `simple_mode` in `retrieve_context`, allowing per-call customization
+
+### Developer Notes
+- When using `simple_mode=True` during GithubRAG initialization, be aware that embedding and reranking functionalities will not be available
+- The `retrieve_context` method now uses a late binding approach for `simple_mode` parameter
+
 ## [0.1.2] - 2024-10-09
 
 ### Added
@@ -49,5 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic functionality for retrieving context from GitHub repositories
 - Integration with LLM for processing and generating responses
 
+[0.1.3]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/JetXu-LLM/llama-github/releases/tag/v0.1.0

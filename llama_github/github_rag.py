@@ -27,8 +27,10 @@ class GitHubAppCredentials:
 
 class GithubRAG:
     rag_processor: RAGProcessor = None
+    simple_mode: bool = False
 
-    def __init__(self, github_access_token: Optional[str] = None,
+    def __init__(self,
+                 github_access_token: Optional[str] = None,
                  github_app_credentials: Optional[GitHubAppCredentials] = None,
                  openai_api_key: Optional[str] = None,
                  mistral_api_key: Optional[str] = None,
@@ -39,6 +41,7 @@ class GithubRAG:
                      "default_embedding"),
                  rerank_model: Optional[str] = config.get("default_reranker"),
                  llm: Any = None,
+                 simple_mode: bool = False,
                  **kwargs) -> None:
         """
         Initialize the GithubRAG with the provided credentials and configuration.
@@ -47,12 +50,14 @@ class GithubRAG:
         - github_access_token (Optional[str]): GitHub access token for authentication.
         - github_app_credentials (Optional[GitHubAppCredentials]): Credentials for GitHub App authentication.
         - openai_api_key (Optional[str]): API key for OpenAI services -- recommend to use, GPT-4-turbo will be used.
+        - mistral_api_key (Optional[str]): API key for Mistral AI services.
         - huggingface_token (Optional[str]): Token for Hugging Face services -- recommend to fill.
         - jina_api_key (Optional[str]): API key for Jina AI services -- s.jina.ai API will be used
         - open_source_models_hg_dir (Optional[str]): Name of open-source models from Hugging Face to replace OpenAI.
         - embedding_model (Optional[str]): Name of Embedding model from Hugging Face, if you have preferred embedding model to be used.
         - rerank_model (Optional[str]): Name of Rerank model from Hugging Face, if you have preferred rerank model to be used.
         - llm (Any): Any kind of LangChain llm chat object - to replace OpenAI or open-source models from Hugging Face.
+        - simple_mode (bool): If True, skip embedding and rerank model initialization in LLMManager.
         - **kwargs:
             :param repo_cleanup_interval (Optional[int]): How often to run repo cleanup in seconds within RepositoryPool.
             :param repo_max_idle_time (Optional[int]): Keep a repo in cache until max idle time if not used.
@@ -63,6 +68,8 @@ class GithubRAG:
         try:
             logger.info("Initializing GithubRAG...")
             logger.debug("Initializing Github Instance...")
+
+            self.simple_mode = simple_mode
 
             self.auth_manager = GitHubAuthManager()
             if github_access_token:
@@ -92,21 +99,25 @@ class GithubRAG:
             logger.debug(
                 "Initializing llm manager, embedding model & reranker model...")
             self.llm_manager = LLMManager(
-                openai_api_key, mistral_api_key, huggingface_token, open_source_models_hg_dir, embedding_model, rerank_model, llm)
+                openai_api_key, mistral_api_key, huggingface_token, open_source_models_hg_dir, embedding_model, rerank_model, llm, simple_mode=self.simple_mode)
             logger.debug(
                 "LLM Manager, Embedding model & Reranker model Initialized.")
 
             self.rag_processor = RAGProcessor(
                 self.github_api_handler, self.llm_manager)
+            logger.info("GithubRAG initialization completed.")
         except Exception as e:
-            logger.error(f"Error initializing GithubRAG: {e}")
-            raise e
+            logger.error(f"Error during GithubRAG initialization: {str(e)}")
+            raise
 
-    async def async_retrieve_context(self, query, simple_mode=False) -> List[str]:
+    async def async_retrieve_context(self, query, simple_mode: Optional[bool] = None) -> List[str]:
         # Implementation of the context retrieval process
         # This will involve using the GitHub API to search for relevant information,
         # augmenting the retrieved data through the RAG methodology, and
         # enhancing it with LLM capabilities.
+
+        if simple_mode is None:
+            simple_mode = self.simple_mode
 
         topn_contexts = []  # This will be the list of context strings
         try:
@@ -176,26 +187,29 @@ class GithubRAG:
             raise e
         return topn_contexts
 
-    def retrieve_context(self, query, simple_mode=False) -> List[str]:
+    def retrieve_context(self, query, simple_mode: Optional[bool] = None) -> List[str]:
         """
         Retrieve context from GitHub code, issue and repo search based on the input query.
 
         Args:
             query (str): The query or question to retrieve context for.
+            simple_mode (Optional[bool]): If provided, overrides the instance's simple_mode setting.
 
         Returns:
             List[str]: A list of context strings retrieved from the specified GitHub repositories.
         """
+        effective_simple_mode = self.simple_mode if simple_mode is None else simple_mode
+
         self.loop = asyncio.get_event_loop()
         ipython = get_ipython()
         if ipython and ipython.has_trait('kernel'):
             logger.debug("Running in Jupyter notebook, nest_asyncio applied.")
             import nest_asyncio
             nest_asyncio.apply()
-            return asyncio.run(self.async_retrieve_context(query, simple_mode=simple_mode))
+            return asyncio.run(self.async_retrieve_context(query, simple_mode=effective_simple_mode))
         if self.loop.is_running():
-            return asyncio.ensure_future(self.async_retrieve_context(query, simple_mode=simple_mode))
-        return self.loop.run_until_complete(self.async_retrieve_context(query, simple_mode=simple_mode))
+            return asyncio.ensure_future(self.async_retrieve_context(query, simple_mode=effective_simple_mode))
+        return self.loop.run_until_complete(self.async_retrieve_context(query, simple_mode=effective_simple_mode))
 
     async def code_search_retrieval(self, query, draft_answer: Optional[str] = None):
         result = []
