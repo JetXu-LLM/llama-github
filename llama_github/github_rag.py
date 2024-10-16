@@ -46,24 +46,26 @@ class GithubRAG:
         """
         Initialize the GithubRAG with the provided credentials and configuration.
 
-        Parameters:
-        - github_access_token (Optional[str]): GitHub access token for authentication.
-        - github_app_credentials (Optional[GitHubAppCredentials]): Credentials for GitHub App authentication.
-        - openai_api_key (Optional[str]): API key for OpenAI services -- recommend to use, GPT-4-turbo will be used.
-        - mistral_api_key (Optional[str]): API key for Mistral AI services.
-        - huggingface_token (Optional[str]): Token for Hugging Face services -- recommend to fill.
-        - jina_api_key (Optional[str]): API key for Jina AI services -- s.jina.ai API will be used
-        - open_source_models_hg_dir (Optional[str]): Name of open-source models from Hugging Face to replace OpenAI.
-        - embedding_model (Optional[str]): Name of Embedding model from Hugging Face, if you have preferred embedding model to be used.
-        - rerank_model (Optional[str]): Name of Rerank model from Hugging Face, if you have preferred rerank model to be used.
-        - llm (Any): Any kind of LangChain llm chat object - to replace OpenAI or open-source models from Hugging Face.
-        - simple_mode (bool): If True, skip embedding and rerank model initialization in LLMManager.
-        - **kwargs:
-            :param repo_cleanup_interval (Optional[int]): How often to run repo cleanup in seconds within RepositoryPool.
-            :param repo_max_idle_time (Optional[int]): Keep a repo in cache until max idle time if not used.
+        This constructor sets up the necessary components for GitHub integration,
+        RAG processing, and LLM capabilities. It handles authentication, initializes
+        the repository pool, and sets up the LLM manager.
 
-        Returns:
-        - None
+        Args:
+            github_access_token (Optional[str]): GitHub access token for authentication.
+            github_app_credentials (Optional[GitHubAppCredentials]): Credentials for GitHub App authentication.
+            openai_api_key (Optional[str]): API key for OpenAI services (GPT-4-turbo will be used).
+            mistral_api_key (Optional[str]): API key for Mistral AI services.
+            huggingface_token (Optional[str]): Token for Hugging Face services (recommended).
+            jina_api_key (Optional[str]): API key for Jina AI services (s.jina.ai API will be used).
+            open_source_models_hg_dir (Optional[str]): Directory for open-source models from Hugging Face.
+            embedding_model (Optional[str]): Name of the preferred embedding model from Hugging Face.
+            rerank_model (Optional[str]): Name of the preferred rerank model from Hugging Face.
+            llm (Any): Any LangChain LLM chat object to replace OpenAI or open-source models.
+            simple_mode (bool): If True, skip embedding and rerank model initialization in LLMManager.
+            **kwargs: Additional keyword arguments for repository pool configuration.
+
+        Raises:
+            Exception: If there's an error during initialization.
         """
         try:
             logger.info("Initializing GithubRAG...")
@@ -111,10 +113,23 @@ class GithubRAG:
             raise
 
     async def async_retrieve_context(self, query, simple_mode: Optional[bool] = None) -> List[str]:
-        # Implementation of the context retrieval process
-        # This will involve using the GitHub API to search for relevant information,
-        # augmenting the retrieved data through the RAG methodology, and
-        # enhancing it with LLM capabilities.
+        """
+        Asynchronously retrieve context based on the given query.
+
+        This method orchestrates the context retrieval process, including Google search,
+        code search, issue search, and repository search. It uses the RAG processor to
+        analyze the query and retrieve the most relevant contexts.
+
+        Args:
+            query (str): The query to retrieve context for.
+            simple_mode (Optional[bool]): If provided, overrides the instance's simple_mode setting.
+
+        Returns:
+            List[str]: A list of the most relevant context strings.
+
+        Raises:
+            Exception: If there's an error during context retrieval.
+        """
 
         if simple_mode is None:
             simple_mode = self.simple_mode
@@ -191,6 +206,10 @@ class GithubRAG:
         """
         Retrieve context from GitHub code, issue and repo search based on the input query.
 
+        This method serves as a wrapper for the async_retrieve_context method,
+        handling the asynchronous call in different runtime environments (e.g., Jupyter notebook,
+        asyncio event loop).
+
         Args:
             query (str): The query or question to retrieve context for.
             simple_mode (Optional[bool]): If provided, overrides the instance's simple_mode setting.
@@ -212,6 +231,24 @@ class GithubRAG:
         return self.loop.run_until_complete(self.async_retrieve_context(query, simple_mode=effective_simple_mode))
 
     async def code_search_retrieval(self, query, draft_answer: Optional[str] = None):
+        """
+        Perform a code search on GitHub based on the given query and draft answer.
+
+        This method uses the RAG processor to generate search criteria, then performs
+        a code search using the GitHub API. It filters and deduplicates the results
+        based on star count and relevance.
+
+        Args:
+            query (str): The main query for the code search.
+            draft_answer (Optional[str]): A draft answer to refine the search criteria.
+
+        Returns:
+            list: A list of unique, relevant code search results.
+
+        Raises:
+            Exception: If there's an error during the code search retrieval.
+        """
+        
         result = []
         try:
             logger.info("Retrieving code search...")
@@ -238,6 +275,24 @@ class GithubRAG:
         return result
 
     async def issue_search_retrieval(self, query, draft_answer: Optional[str] = None):
+        """
+        Perform an issue search on GitHub based on the given query and draft answer.
+
+        This method uses the RAG processor to generate search criteria, then performs
+        an issue search using the GitHub API. It deduplicates the results and transforms
+        the API URLs to official GitHub issue webpage URLs.
+
+        Args:
+            query (str): The main query for the issue search.
+            draft_answer (Optional[str]): A draft answer to refine the search criteria.
+
+        Returns:
+            list: A list of unique, relevant issue search results with transformed URLs.
+
+        Raises:
+            Exception: If there's an error during the issue search retrieval.
+        """
+
         result = []
         try:
             logger.info("Retrieving issue search...")
@@ -268,6 +323,23 @@ class GithubRAG:
         return result
 
     async def google_search_retrieval(self, query):
+        """
+        Perform a Google search for GitHub-related content based on the given query.
+
+        This method uses the Jina AI search API to perform a Google search limited to
+        GitHub.com. It then retrieves the content of the resulting GitHub URLs using
+        the GitHub API.
+
+        Args:
+            query (str): The query to search for on Google.
+
+        Returns:
+            list: A list of dictionaries containing the GitHub URL and its content.
+
+        Raises:
+            Exception: If there's an error during the Google search retrieval.
+        """
+
         result = []
         try:
             logger.info("Retrieving google search...")
@@ -304,15 +376,39 @@ class GithubRAG:
 
     def _get_repository_rag_info(self, repository: Repository):
         """
-        Helper method to get file content through a Repository object.
+        Retrieve RAG-related information for a given repository.
 
-        :param code_search_result: A single code search result.
-        :return: Tuple containing the Repository object and the file content.
+        This helper method fetches the README content and a simple structure
+        of the repository using the Repository object.
+
+        Args:
+            repository (Repository): The Repository object to get information from.
+
+        Returns:
+            tuple: A tuple containing the repository's README content and simple structure.
         """
-        # Assuming RepositoryPool is accessible and initialized somewhere in this class
+
         return repository.get_readme(), self.rag_processor.get_repo_simple_structure(repository)
 
     async def repo_search_retrieval(self, query, draft_answer: Optional[str] = None):
+        """
+        Perform a repository search on GitHub based on the given query and draft answer.
+
+        This method uses the RAG processor to generate search criteria, then performs
+        a repository search using the GitHub API. It retrieves README content and
+        simple structure for each relevant repository concurrently.
+
+        Args:
+            query (str): The main query for the repository search.
+            draft_answer (Optional[str]): A draft answer to refine the search criteria.
+
+        Returns:
+            list: A list of dictionaries containing repository information and content.
+
+        Raises:
+            Exception: If there's an error during the repository search retrieval.
+        """
+
         result = []
         results_with_index = []
         try:
@@ -370,18 +466,20 @@ class GithubRAG:
         """
         Generate an answer based on the given query and optional contexts.
 
-        This method can be called in different environments (Jupyter notebook, 
-        synchronous Python program, asynchronous Python program) and will 
-        handle the async call appropriately.
+        This method serves as a wrapper for the async_answer_with_context method,
+        handling the asynchronous call in different runtime environments (e.g., Jupyter notebook,
+        asyncio event loop).
 
         Args:
             query (str): The user's query.
             contexts (Optional[List[Dict[str, Any]]]): Optional list of context dictionaries.
                 Each dictionary should contain 'content' and 'url' keys.
+            simple_mode (bool): Whether to use simple mode for context retrieval.
 
         Returns:
             str: The generated answer.
         """
+
         self.loop = asyncio.get_event_loop()
         ipython = get_ipython()
         if ipython and ipython.has_trait('kernel'):
@@ -397,14 +495,19 @@ class GithubRAG:
         """
         Asynchronously generate an answer based on the given query and optional contexts.
 
+        This method retrieves contexts if not provided, extracts relevant information,
+        and uses the RAG processor's LLM handler to generate an answer.
+
         Args:
             query (str): The user's query.
             contexts (Optional[List[Dict[str, Any]]]): Optional list of context dictionaries.
                 Each dictionary should contain 'content' and 'url' keys.
+            simple_mode (bool): Whether to use simple mode for context retrieval.
 
         Returns:
             str: The generated answer.
         """
+        
         if contexts is None:
             contexts = await self.async_retrieve_context(query, simple_mode)
             logger.debug(f"Retrieved contexts: {contexts}")
