@@ -2,8 +2,6 @@
 from typing import Optional, Any
 from threading import Lock
 from langchain_openai import ChatOpenAI
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_mistralai.chat_models import ChatMistralAI
 
 from llama_github.config.config import config
