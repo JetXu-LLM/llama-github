@@ -9,3 +9,9 @@ requests
 torch
 transformers
 urllib3
+pydantic_core
+langchain_openai
+langchain_community
+langchain_mistralai
+httpx_sse
+tokenizers
