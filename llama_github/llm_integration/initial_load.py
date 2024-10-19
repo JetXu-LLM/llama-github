@@ -10,6 +10,11 @@ from llama_github.config.config import config
 from llama_github.logger import logger
 
 class LLMManager:
+    """
+    Singleton class for managing Language Models and related components.
+    This class handles initialization and access to various models including LLMs,
+    embedding models, and reranking models.
+    """
     _instance_lock = Lock()
     _instance = None
     llm = None
@@ -20,6 +25,9 @@ class LLMManager:
     embedding_model = None
 
     def __new__(cls, *args, **kwargs):
+        """
+        Ensure only one instance of LLMManager is created (Singleton pattern).
+        """
         if cls._instance is None:  # First check (unlocked)
             with cls._instance_lock:  # Acquire lock
                 if cls._instance is None:  # Second check (locked)
@@ -36,6 +44,19 @@ class LLMManager:
                  rerank_model: Optional[str] = config.get("default_reranker"),
                  llm: Any = None,
                  simple_mode: bool = False):
+        """
+        Initialize the LLMManager with specified models and API keys.
+
+        Args:
+            openai_api_key (Optional[str]): API key for OpenAI.
+            mistral_api_key (Optional[str]): API key for Mistral AI.
+            huggingface_token (Optional[str]): Token for Hugging Face.
+            open_source_models_hg_dir (Optional[str]): Directory for open-source models.
+            embedding_model (Optional[str]): Name or path of the embedding model.
+            rerank_model (Optional[str]): Name or path of the reranking model.
+            llm (Any): Custom LLM instance if provided.
+            simple_mode (bool): If True, skip initialization of embedding and reranking models.
+        """
         with self._instance_lock:   # Prevent re-initialization
             if self._initialized:
                 return
@@ -43,7 +64,7 @@ class LLMManager:
 
         self.simple_mode = simple_mode
 
-        # Initialize for OpenAI GPT-4
+        # Initialize LLM based on provided API keys or custom LLM
         if llm is not None:
             self.llm = llm
             self.model_type = "Custom_langchain_llm"
@@ -61,7 +82,7 @@ class LLMManager:
         # Initialize for Open Source Models
         elif open_source_models_hg_dir is not None and open_source_models_hg_dir != "" and self.llm is None:
             logger.info(f"Initializing {open_source_models_hg_dir}...")
-            # load hugingface models
+            # load huggingface models
             self.model_type = "Hubgingface"
         elif self.llm is None:
             # default model is phi3_mini_128k
@@ -72,7 +93,7 @@ class LLMManager:
             from transformers import AutoModel
             from transformers import AutoModelForSequenceClassification
             from transformers import AutoTokenizer
-            # initial model_kwargs
+            # Determine the device (CUDA, MPS, or CPU)
             if torch.cuda.is_available():
                 self.device = torch.device('cuda')
             elif torch.backends.mps.is_available():
@@ -80,14 +101,14 @@ class LLMManager:
             else:
                 self.device = torch.device('cpu')
 
-            # initial embedding_model
+            # Initialize embedding model
             if self.tokenizer is None:
                 logger.info(f"Initializing {embedding_model}...")
                 self.tokenizer = AutoTokenizer.from_pretrained(embedding_model)
                 self.embedding_model = AutoModel.from_pretrained(
                     embedding_model, trust_remote_code=True).to(self.device)
 
-            # initial rerank_model
+            # Initialize reranking model
             if self.rerank_model is None:
                 logger.info(f"Initializing {rerank_model}...")
                 self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
@@ -97,16 +118,46 @@ class LLMManager:
             logger.info("Simple mode enabled. Skipping embedding and rerank model initialization.")
 
     def get_llm(self):
+        """
+        Get the main Language Model.
+
+        Returns:
+            The initialized Language Model.
+        """
         return self.llm
 
     def get_llm_simple(self):
+        """
+        Get the simplified Language Model.
+
+        Returns:
+            The initialized simplified Language Model.
+        """
         return self.llm_simple
 
     def get_tokenizer(self):
+        """
+        Get the tokenizer for the embedding model.
+
+        Returns:
+            The initialized tokenizer.
+        """
         return self.tokenizer
 
     def get_rerank_model(self):
+        """
+        Get the reranking model.
+
+        Returns:
+            The initialized reranking model.
+        """
         return self.rerank_model
 
     def get_embedding_model(self):
+        """
+        Get the embedding model.
+
+        Returns:
+            The initialized embedding model.
+        """
         return self.embedding_model
