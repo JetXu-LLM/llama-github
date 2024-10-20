@@ -12,3 +12,8 @@ urllib3
 sys
 platform
 subprocess
+pydantic_core
+langchain_openai
+langchain_mistralai
+httpx_sse
+tokenizers
