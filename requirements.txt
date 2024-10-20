@@ -9,6 +9,9 @@ requests
 torch
 transformers
 urllib3
+sys
+platform
+subprocess
 pydantic_core
 langchain_openai
 langchain_mistralai
