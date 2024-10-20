@@ -9,3 +9,6 @@ requests
 torch
 transformers
 urllib3
+sys
+platform
+subprocess

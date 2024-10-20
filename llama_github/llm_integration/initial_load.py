@@ -2,8 +2,6 @@
 from typing import Optional, Any
 from threading import Lock
 from langchain_openai import ChatOpenAI
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_mistralai.chat_models import ChatMistralAI
 
 from llama_github.config.config import config
@@ -89,18 +87,32 @@ class LLMManager:
             self.model_type = "Hubgingface"
             
         if not self.simple_mode:
-            import torch
+            import sys
+            import platform
+            import subprocess
+
+            def get_device():
+                if sys.platform.startswith('darwin'):  # macOS
+                    # Check for Apple Silicon (M1/M2)
+                    if platform.machine() == 'arm64':
+                        return 'mps'
+                elif sys.platform.startswith('linux') or sys.platform.startswith('win'):
+                    # Check for NVIDIA GPU
+                    try:
+                        subprocess.run(['nvidia-smi'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        return 'cuda'
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        pass
+                
+                # Default to CPU
+                return 'cpu'
+
+            # Usage
+            self.device = get_device()
+
             from transformers import AutoModel
             from transformers import AutoModelForSequenceClassification
             from transformers import AutoTokenizer
-            # Determine the device (CUDA, MPS, or CPU)
-            if torch.cuda.is_available():
-                self.device = torch.device('cuda')
-            elif torch.backends.mps.is_available():
-                self.device = torch.device('mps')
-            else:
-                self.device = torch.device('cpu')
-
             # Initialize embedding model
             if self.tokenizer is None:
                 logger.info(f"Initializing {embedding_model}...")
