@@ -6,7 +6,6 @@ langchain
 numpy
 pydantic
 requests
-torch
 transformers
 urllib3
 sys
