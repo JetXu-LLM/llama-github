@@ -241,25 +241,79 @@ class Repository:
     
     def extract_related_issues(self, pr_data: Dict[str, Any]) -> List[int]:
         """
-        Extracts related issue numbers from the PR description and other fields.
-
-        :param pr_data: The pull request data dictionary.
-        :return: A list of related issue numbers.
+        Extracts related issue numbers from all PR data following GitHub's reference syntax.
+        
+        This function implements GitHub's official autolink reference formats to find:
+        1. Full GitHub issue/PR URLs
+        2. Numeric references (#123)
+        3. Keywords + issue references (fixes #123)
+        4. Repository cross-references (owner/repo#123)
+        
+        See: https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls
+        
+        Args:
+            pr_data: Dict[str, Any] - The complete pull request data dictionary
+            
+        Returns:
+            List[int] - A sorted list of unique issue numbers found in the PR data
         """
+        # GitHub's official closing keywords
+        closing_keywords = (
+            'close', 'closes', 'closed',
+            'fix', 'fixes', 'fixed',
+            'resolve', 'resolves', 'resolved'
+        )
+
+        # Regex patterns for GitHub issue references
         patterns = [
-            rf'https://github\.com/{re.escape(self.full_name)}/issues/(\d+)',
-            r'(?:^|\s)#(\d+)',
-            r'(?:^|\s)(\d+)(?:\s|$)',
+            # Full GitHub issue/PR URL pattern
+            rf'(?:https?://)?github\.com/{re.escape(self.full_name)}/(?:issues|pull)/(\d+)',
+            
+            # Standard #123 reference with proper boundaries
+            r'(?:^|[^\w/])#(\d+)(?=[^\w/]|$)',
+            
+            # Closing keywords (fixes #123)
+            fr'(?:^|[^\w/])(?:{"|".join(closing_keywords)}):?\s+#(\d+)(?=[^\w/]|$)',
+            
+            # Cross-repo reference (owner/repo#123)
+            rf'{re.escape(self.full_name)}#(\d+)',
+            
+            # Issue keyword reference (issue #123 or issue: #123)
+            r'(?:^|[^\w/])(?:issue|bug|ticket|todo|task)s?:?\s+#?(\d+)(?=[^\w/]|$)'
         ]
+
         issues = set()
-        # Convert PR data to JSON string for pattern matching
-        pr_description = json.dumps(pr_data, default=str)
         
-        for pattern in patterns:
-            matches = re.findall(pattern, pr_description)
-            issues.update(int(match) for match in matches)
+        def extract_from_text(text: str) -> None:
+            """Helper function to extract issue numbers from text"""
+            if not isinstance(text, str):
+                return
+                
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+                # Validate issue numbers (reasonable length and positive values)
+                valid_matches = [
+                    int(match) for match in matches 
+                    if match.isdigit() and len(match) <= 7 and int(match) > 0
+                ]
+                issues.update(valid_matches)
+
+        def process_value(value: Any) -> None:
+            """Recursively process dictionary values and extract issue numbers"""
+            if isinstance(value, dict):
+                for v in value.values():
+                    process_value(v)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    process_value(item)
+            elif isinstance(value, str):
+                extract_from_text(value)
+
+        # Process all data in pr_data recursively
+        process_value(pr_data)
         
-        return list(issues)
+        return sorted(list(issues))
+
 
     def get_issue_contents(self, issue_numbers: List[int], pr_number: int) -> List[Dict[str, Any]]:
         """
@@ -324,10 +378,33 @@ class Repository:
                                 "head_branch": pr.head.ref,
                             },
                             "related_issues": [],
+                            "commits": [],
                             "file_changes": [],
                             "ci_cd_results": [],
                             "interactions": []
                         }
+
+                        # Fetch and process commits
+                        try:
+                            commits = pr.get_commits()
+                            for commit in commits:
+                                commit_data = {
+                                    "sha": commit.sha,
+                                    "message": commit.commit.message,
+                                    "author": commit.commit.author.name,
+                                    "date": self.to_isoformat(commit.commit.author.date),
+                                    "stats": {
+                                        "additions": commit.stats.additions,
+                                        "deletions": commit.stats.deletions,
+                                        "total": commit.stats.total
+                                    },
+                                    "files": [f.filename for f in commit.files]  # Just keep changed file names
+                                }
+                                pr_data["commits"].append(commit_data)
+                        except GithubException as e:
+                            logger.exception(f"Error fetching commits for PR #{number}")
+                            pr_data["commits"] = []
+                            pr_data["commit_stats"] = {}
 
                         # Fetch CI/CD results
                         try:

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2024-10-30
+
+### New Features
+- Enhanced PR content analysis with detailed commit information extraction
+- Improved issue linking detection with support for multiple reference formats
+  - Full GitHub URLs, #references, and keyword-based references
+  - Added validation for issue numbers
+
+### Improvements
+- Added detailed commit metadata extraction including stats and file changes
+- Enhanced error handling for commit fetching
+
 ## [0.1.5] - 2024-10-14
 
 ### Optimized
