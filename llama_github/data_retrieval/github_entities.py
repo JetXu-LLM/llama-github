@@ -242,24 +242,70 @@ class Repository:
     def extract_related_issues(self, pr_data: Dict[str, Any]) -> List[int]:
         """
         Extracts related issue numbers from the PR description and other fields.
+        Implements GitHub's official autolink reference formats and issue linking keywords.
 
-        :param pr_data: The pull request data dictionary.
-        :return: A list of related issue numbers.
+        The function searches for:
+        1. Full GitHub issue URLs
+        2. Issue references with # symbol (#123)
+        3. Closing keyword references (fixes #123)
+        4. Issue keyword references (issue #123)
+
+        References:
+        - https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls
+        - https://docs.github.com/articles/closing-issues-via-commit-messages
+
+        Args:
+            pr_data (Dict[str, Any]): The pull request data dictionary from GitHub API
+
+        Returns:
+            List[int]: A sorted list of unique issue numbers referenced in the PR
         """
+        # Official GitHub closing keywords
+        closing_keywords = (
+            'close', 'closes', 'closed',
+            'fix', 'fixes', 'fixed',
+            'resolve', 'resolves', 'resolved'
+        )
+
+        # Regex patterns for different types of issue references
         patterns = [
+            # Full GitHub issue URL pattern
             rf'https://github\.com/{re.escape(self.full_name)}/issues/(\d+)',
-            r'(?:^|\s)#(\d+)',
-            r'(?:^|\s)(\d+)(?:\s|$)',
+            
+            # GitHub autolink reference pattern (#123)
+            # Ensures proper word boundaries and common punctuation
+            r'(?:^|\s)#(\d+)(?=[\s,.\'\"\)\]:]|$)',
+            
+            # Closing keyword pattern (fixes #123)
+            fr'(?:^|\s)(?:{"|".join(closing_keywords)}):?\s+#(\d+)(?=[\s,.\'\"\)\]:]|$)',
+            
+            # Issue keyword pattern (issue #123 or issue 123)
+            r'(?:^|\s)(?:issue|bug|ticket)\s+#?(\d+)(?=[\s,.\'\"\)\]:]|$)'
         ]
+
         issues = set()
-        # Convert PR data to JSON string for pattern matching
-        pr_description = json.dumps(pr_data, default=str)
         
-        for pattern in patterns:
-            matches = re.findall(pattern, pr_description)
-            issues.update(int(match) for match in matches)
-        
-        return list(issues)
+        # Fields that commonly contain issue references
+        searchable_fields = [
+            pr_data.get('title', ''),
+            pr_data.get('body', ''),
+        ]
+
+        # Process each field for issue references
+        for field in searchable_fields:
+            if not field:
+                continue
+            text = str(field)
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                # Validate issue numbers (reasonable length and positive values)
+                valid_matches = [
+                    int(match) for match in matches 
+                    if match.isdigit() and len(match) <= 6 and int(match) > 0
+                ]
+                issues.update(valid_matches)
+
+        return sorted(list(issues))
 
     def get_issue_contents(self, issue_numbers: List[int], pr_number: int) -> List[Dict[str, Any]]:
         """
@@ -324,10 +370,33 @@ class Repository:
                                 "head_branch": pr.head.ref,
                             },
                             "related_issues": [],
+                            "commits": [],
                             "file_changes": [],
                             "ci_cd_results": [],
                             "interactions": []
                         }
+
+                        # Fetch and process commits
+                        try:
+                            commits = pr.get_commits()
+                            for commit in commits:
+                                commit_data = {
+                                    "sha": commit.sha,
+                                    "message": commit.commit.message,
+                                    "author": commit.commit.author.name,
+                                    "date": self.to_isoformat(commit.commit.author.date),
+                                    "stats": {
+                                        "additions": commit.stats.additions,
+                                        "deletions": commit.stats.deletions,
+                                        "total": commit.stats.total
+                                    },
+                                    "files": [f.filename for f in commit.files]  # Just keep changed file names
+                                }
+                                pr_data["commits"].append(commit_data)
+                        except GithubException as e:
+                            logger.exception(f"Error fetching commits for PR #{number}")
+                            pr_data["commits"] = []
+                            pr_data["commit_stats"] = {}
 
                         # Fetch CI/CD results
                         try:
