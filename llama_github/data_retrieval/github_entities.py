@@ -241,71 +241,79 @@ class Repository:
     
     def extract_related_issues(self, pr_data: Dict[str, Any]) -> List[int]:
         """
-        Extracts related issue numbers from the PR description and other fields.
-        Implements GitHub's official autolink reference formats and issue linking keywords.
-
-        The function searches for:
-        1. Full GitHub issue URLs
-        2. Issue references with # symbol (#123)
-        3. Closing keyword references (fixes #123)
-        4. Issue keyword references (issue #123)
-
-        References:
-        - https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls
-        - https://docs.github.com/articles/closing-issues-via-commit-messages
-
+        Extracts related issue numbers from all PR data following GitHub's reference syntax.
+        
+        This function implements GitHub's official autolink reference formats to find:
+        1. Full GitHub issue/PR URLs
+        2. Numeric references (#123)
+        3. Keywords + issue references (fixes #123)
+        4. Repository cross-references (owner/repo#123)
+        
+        See: https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls
+        
         Args:
-            pr_data (Dict[str, Any]): The pull request data dictionary from GitHub API
-
+            pr_data: Dict[str, Any] - The complete pull request data dictionary
+            
         Returns:
-            List[int]: A sorted list of unique issue numbers referenced in the PR
+            List[int] - A sorted list of unique issue numbers found in the PR data
         """
-        # Official GitHub closing keywords
+        # GitHub's official closing keywords
         closing_keywords = (
             'close', 'closes', 'closed',
             'fix', 'fixes', 'fixed',
             'resolve', 'resolves', 'resolved'
         )
 
-        # Regex patterns for different types of issue references
+        # Regex patterns for GitHub issue references
         patterns = [
-            # Full GitHub issue URL pattern
-            rf'https://github\.com/{re.escape(self.full_name)}/issues/(\d+)',
+            # Full GitHub issue/PR URL pattern
+            rf'(?:https?://)?github\.com/{re.escape(self.full_name)}/(?:issues|pull)/(\d+)',
             
-            # GitHub autolink reference pattern (#123)
-            # Ensures proper word boundaries and common punctuation
-            r'(?:^|\s)#(\d+)(?=[\s,.\'\"\)\]:]|$)',
+            # Standard #123 reference with proper boundaries
+            r'(?:^|[^\w/])#(\d+)(?=[^\w/]|$)',
             
-            # Closing keyword pattern (fixes #123)
-            fr'(?:^|\s)(?:{"|".join(closing_keywords)}):?\s+#(\d+)(?=[\s,.\'\"\)\]:]|$)',
+            # Closing keywords (fixes #123)
+            fr'(?:^|[^\w/])(?:{"|".join(closing_keywords)}):?\s+#(\d+)(?=[^\w/]|$)',
             
-            # Issue keyword pattern (issue #123 or issue 123)
-            r'(?:^|\s)(?:issue|bug|ticket)\s+#?(\d+)(?=[\s,.\'\"\)\]:]|$)'
+            # Cross-repo reference (owner/repo#123)
+            rf'{re.escape(self.full_name)}#(\d+)',
+            
+            # Issue keyword reference (issue #123 or issue: #123)
+            r'(?:^|[^\w/])(?:issue|bug|ticket|todo|task)s?:?\s+#?(\d+)(?=[^\w/]|$)'
         ]
 
         issues = set()
         
-        # Fields that commonly contain issue references
-        searchable_fields = [
-            pr_data.get('title', ''),
-            pr_data.get('body', ''),
-        ]
-
-        # Process each field for issue references
-        for field in searchable_fields:
-            if not field:
-                continue
-            text = str(field)
+        def extract_from_text(text: str) -> None:
+            """Helper function to extract issue numbers from text"""
+            if not isinstance(text, str):
+                return
+                
             for pattern in patterns:
-                matches = re.findall(pattern, text, re.IGNORECASE)
+                matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
                 # Validate issue numbers (reasonable length and positive values)
                 valid_matches = [
                     int(match) for match in matches 
-                    if match.isdigit() and len(match) <= 6 and int(match) > 0
+                    if match.isdigit() and len(match) <= 7 and int(match) > 0
                 ]
                 issues.update(valid_matches)
 
+        def process_value(value: Any) -> None:
+            """Recursively process dictionary values and extract issue numbers"""
+            if isinstance(value, dict):
+                for v in value.values():
+                    process_value(v)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    process_value(item)
+            elif isinstance(value, str):
+                extract_from_text(value)
+
+        # Process all data in pr_data recursively
+        process_value(pr_data)
+        
         return sorted(list(issues))
+
 
     def get_issue_contents(self, issue_numbers: List[int], pr_number: int) -> List[Dict[str, Any]]:
         """
