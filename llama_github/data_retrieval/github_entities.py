@@ -13,6 +13,7 @@ import json
 from dateutil import parser
 from datetime import timezone
 import base64
+import requests
 
 from llama_github.utils import DiffGenerator, CodeAnalyzer
 
@@ -153,6 +154,16 @@ class Repository:
         """
         file_key = f"{file_path}/{sha}" if sha is not None else file_path
 
+        # Skip binary and system files
+        if any(file_path.endswith(ext) for ext in [
+            '.exe', '.dll', '.so', '.dylib', '.bin', 
+            '.png', '.jpg', '.jpeg', '.gif', '.ico',
+            '.mp3', '.mp4', '.avi', '.mov', '.pdf',
+            '.DS_Store'
+        ]) or '/.' in file_path:
+            logger.debug(f"Skipping binary or system file: {file_path}")
+            return None
+
         if file_key not in self._file_contents:  # Check if file content has already been fetched
             with self._file_contents_lock:  # Locking for thread-safe write action
                 if file_key not in self._file_contents:  # Double-check after acquiring the lock
@@ -162,9 +173,26 @@ class Repository:
                         else:
                             file_content = self.repo.get_contents(file_path)
                         
+                        # Handle directory case
+                        if isinstance(file_content, list):
+                            logger.debug(f"Path {file_path} is a directory")
+                            return None
+
                         # Improved encoding handling
                         if file_content.encoding == 'base64':
                             decoded_content = base64.b64decode(file_content.content).decode('utf-8')
+                        elif (file_content.encoding is None or file_content.encoding == 'none') and hasattr(file_content, 'download_url') and file_content.download_url:
+                            try:
+                                response = requests.get(
+                                    file_content.download_url,
+                                    timeout=30,
+                                    headers={'Accept': 'application/vnd.github.v3.raw'}
+                                )
+                                response.raise_for_status()
+                                decoded_content = response.text
+                            except requests.RequestException as e:
+                                logger.error(f"Failed to download file {file_path}: {str(e)}")
+                                return None
                         else:
                             decoded_content = file_content.decoded_content.decode('utf-8')
                         
@@ -180,7 +208,8 @@ class Repository:
 
         self.update_last_read_time()
         return self._file_contents.get(file_key)
-    
+
+
     def get_issue_content(self, number, issue=None) -> str:
         """
         Retrieves the content of a issue using a singleton design pattern.
@@ -200,8 +229,8 @@ class Repository:
                                 "\nComment amount: " + \
                                 str(comments_amount) + \
                                 "\nIssue body:\n" + \
-                                re.sub(r'\n+\s*\n+', '\n',
-                                       issue.body.replace('\r', '\n').strip())
+                                (re.sub(r'\n+\s*\n+', '\n',
+                                    (issue.body or "").replace('\r', '\n').strip()) if issue.body else "No issue body provided")
                         else:
                             comments_amount = issue['comments']
                             body_content = "This is a Github Issue related to repo \"" + (self.full_name or "") + "\". Repo description:" + (self.description or "") +\
@@ -235,6 +264,9 @@ class Repository:
                     except GithubException as e:
                         logger.exception(
                             f"Error getting issue content for {number} in repository {self.full_name}:")
+                        return None
+                    except Exception as e:
+                        logger.error(f"Unexpected error processing : {str(e)}")
                         return None
         self.update_last_read_time()
         return self._issues[number]
@@ -384,27 +416,9 @@ class Repository:
                             "interactions": []
                         }
 
-                        # Fetch and process commits
-                        try:
-                            commits = pr.get_commits()
-                            for commit in commits:
-                                commit_data = {
-                                    "sha": commit.sha,
-                                    "message": commit.commit.message,
-                                    "author": commit.commit.author.name,
-                                    "date": self.to_isoformat(commit.commit.author.date),
-                                    "stats": {
-                                        "additions": commit.stats.additions,
-                                        "deletions": commit.stats.deletions,
-                                        "total": commit.stats.total
-                                    },
-                                    "files": [f.filename for f in commit.files]  # Just keep changed file names
-                                }
-                                pr_data["commits"].append(commit_data)
-                        except GithubException as e:
-                            logger.exception(f"Error fetching commits for PR #{number}")
-                            pr_data["commits"] = []
-                            pr_data["commit_stats"] = {}
+                        # Extract related issues from PR description and comments
+                        related_issues = self.extract_related_issues(pr_data)
+                        pr_data['related_issues'] = self.get_issue_contents(related_issues, pr.number)
 
                         # Fetch CI/CD results
                         try:
@@ -489,9 +503,27 @@ class Repository:
                         pr_interactions.sort(key=lambda x: parser.isoparse(x["created_at"]))
                         pr_data["interactions"] = pr_interactions
 
-                        # Extract related issues from PR description and comments
-                        related_issues = self.extract_related_issues(pr_data)
-                        pr_data['related_issues'] = self.get_issue_contents(related_issues, pr.number)
+                        # Fetch and process commits
+                        try:
+                            commits = pr.get_commits()
+                            for commit in commits:
+                                commit_data = {
+                                    "sha": commit.sha,
+                                    "message": commit.commit.message,
+                                    "author": commit.commit.author.name,
+                                    "date": self.to_isoformat(commit.commit.author.date),
+                                    "stats": {
+                                        "additions": commit.stats.additions,
+                                        "deletions": commit.stats.deletions,
+                                        "total": commit.stats.total
+                                    },
+                                    "files": [f.filename for f in commit.files]  # Just keep changed file names
+                                }
+                                pr_data["commits"].append(commit_data)
+                        except GithubException as e:
+                            logger.exception(f"Error fetching commits for PR #{number}")
+                            pr_data["commits"] = []
+                            pr_data["commit_stats"] = {}
 
                         # Process file changes
                         dependency_files = ['requirements.txt', 'Pipfile', 'Pipfile.lock', 'setup.py']
@@ -516,7 +548,10 @@ class Repository:
                                 head_content = self.get_file_content(file_path=file_path, sha=pr.head.sha)
 
                             # Generate custom diff with specified context lines
-                            custom_diff = DiffGenerator.generate_custom_diff(base_content, head_content, context_lines)
+                            if base_content is None and head_content is None:
+                                custom_diff = ''
+                            else:
+                                custom_diff = DiffGenerator.generate_custom_diff(base_content, head_content, context_lines)
 
                             # Categorize code changes
                             change_categories = CodeAnalyzer.categorize_change(custom_diff)
