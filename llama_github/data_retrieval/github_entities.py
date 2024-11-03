@@ -123,7 +123,7 @@ class Repository:
                         return None
         self.update_last_read_time()
         return self._repo
-
+    
     def get_structure(self, path="/") -> dict:
         """
         Retrieves the structure of the repository using a singleton design pattern.
@@ -183,6 +183,8 @@ class Repository:
                             decoded_content = base64.b64decode(file_content.content).decode('utf-8')
                         elif (file_content.encoding is None or file_content.encoding == 'none') and hasattr(file_content, 'download_url') and file_content.download_url:
                             try:
+                                logger.debug(f"Downloading file {file_path} from {file_content.download_url}")
+                                # Use requests to download the file content
                                 response = requests.get(
                                     file_content.download_url,
                                     timeout=30,
@@ -526,6 +528,7 @@ class Repository:
                             pr_data["commit_stats"] = {}
 
                         # Process file changes
+                        comparison = None
                         dependency_files = ['requirements.txt', 'Pipfile', 'Pipfile.lock', 'setup.py']
                         config_files = ['.env', 'settings.py', 'config.yaml', 'config.yml', 'config.json']
                         for file in pr_files:
@@ -552,6 +555,16 @@ class Repository:
                                 custom_diff = ''
                             else:
                                 custom_diff = DiffGenerator.generate_custom_diff(base_content, head_content, context_lines)
+                                if not custom_diff or custom_diff.strip() == '':
+                                    try:
+                                        #use compare API if custom diff is empty
+                                        if not comparison:
+                                            comparison = self.repo.compare(pr.base.sha, pr.head.sha)
+                                        patches = [f.patch for f in comparison.files if f.filename == file_path]
+                                        custom_diff = patches[0] if patches else None
+                                    except Exception as e:
+                                        logger.exception(f"Error fetching file diff for PR #{number}")
+                                        custom_diff = ''
 
                             # Categorize code changes
                             change_categories = CodeAnalyzer.categorize_change(custom_diff)
