@@ -288,6 +288,11 @@ class CodeAnalyzer:
         :return: A list of change categories.
         """
         categories = []
+
+        if not diff_text:
+            categories.append('general_change')
+            return categories
+        
         patterns = {
             'function_added': r'^\+.*def\s+\w+\(',
             'function_removed': r'^-.*def\s+\w+\(',
