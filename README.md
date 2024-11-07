@@ -60,6 +60,22 @@ For more advanced usage and examples, please refer to the [documentation](docs/u
 
 - **🛠️ Logging and Error Handling**: We understand the importance of smooth operations and easy troubleshooting. That's why llama-github comes equipped with comprehensive logging and error handling mechanisms. Gain deep insights into the library's behavior, quickly diagnose issues, and maintain a stable and reliable development workflow.
 
+## 🤖 Try Our AI-Powered PR Review Assistant: LlamaPReview
+
+If you find llama-github useful, you might also be interested in our AI-powered GitHub PR review assistant, LlamaPReview. It's designed to complement your development workflow and further enhance code quality.
+
+### Key Features of LlamaPReview:
+- 🚀 One-click installation, zero configuration required, fully auto-run
+- 💯 Currently free to use - no credit card or payment info needed
+- 🧠 AI-powered, automatic PR reviews with deep code understanding
+- 🌐 Supports multiple programming languages
+
+LlamaPReview provides intelligent, context-aware code analysis and suggestions, helping you maintain high code quality effortlessly. It's like having a senior developer review every PR automatically!
+
+👉 [Install LlamaPReview Now](https://github.com/marketplace/llamapreview/) (Free)
+
+By using llama-github for context retrieval and LlamaPReview for code reviews, you can create a powerful, AI-enhanced development environment.
+
 ## Vision and Roadmap
 
 ### Vision
