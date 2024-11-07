@@ -70,7 +70,7 @@ If you find llama-github useful, you might also be interested in our AI-powered 
 - 🧠 AI-powered, automatic PR reviews with deep code understanding
 - 🌐 Supports multiple programming languages
 
-LlamaPReview provides intelligent, context-aware code analysis and suggestions, helping you maintain high code quality effortlessly. It's like having a senior developer review every PR automatically!
+**LlamaPReview utilizes llama-github's advanced context retrieval and LLM-powered analysis** to provide intelligent, context-aware code reviews. It's like having a senior developer, armed with the full context of your repository, review every PR automatically!
 
 👉 [Install LlamaPReview Now](https://github.com/marketplace/llamapreview/) (Free)
 
