@@ -98,6 +98,11 @@ class Repository:
     @property
     def repo(self):
         return self.get_repo()
+    
+    def set_github(self, github_instance: ExtendedGithub):
+        self._github = github_instance
+        with self._repo_lock:  # Locking for write action
+            self._repo = self._github.get_repo(self.full_name)
 
     def get_repo(self):
         """
@@ -118,8 +123,8 @@ class Repository:
                         self.default_branch = self._repo.default_branch
                         self.updated_at = self._repo.updated_at
                     except GithubException as e:
-                        logger.exception(
-                            f"Error retrieving repository '{self.full_name}':")
+                        logger.error(
+                            f"Error retrieving repository '{self.full_name}':{str(e)}")
                         return None
         self.update_last_read_time()
         return self._repo
@@ -303,8 +308,8 @@ class Repository:
             # Full GitHub issue/PR URL pattern
             rf'(?:https?://)?github\.com/{re.escape(self.full_name)}/(?:issues|pull)/(\d+)',
             
-            # Standard #123 reference with proper boundaries
-            r'(?:^|[^\w/])#(\d+)(?=[^\w/]|$)',
+            # # Standard #123 reference with proper boundaries
+            # r'(?:^|[^\w/])#(\d+)(?=[^\w/]|$)',
             
             # Closing keywords (fixes #123)
             fr'(?:^|[^\w/])(?:{"|".join(closing_keywords)}):?\s+#(\d+)(?=[^\w/]|$)',
@@ -377,7 +382,7 @@ class Repository:
             return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
         return None
 
-    def get_pr_content(self, number, pr=None, context_lines=10) -> Dict[str, Any]:
+    def get_pr_content(self, number, pr=None, context_lines=10, force_update=False) -> Dict[str, Any]:
         """
         Retrieves and processes the content of a pull request.
 
@@ -386,9 +391,9 @@ class Repository:
         :param context_lines: Number of context lines for diffs.
         :return: A dictionary containing detailed PR information.
         """
-        if number not in self._prs:  # Check if issue has already been fetched
+        if number not in self._prs or force_update:  # Check if issue has already been fetched
             with self._pr_lock:  # Locking for write action
-                if number not in self._prs:  # Check if issue has already been fetched after get lock
+                if number not in self._prs or force_update:  # Check if issue has already been fetched after get lock
                     try:
                         logger.debug(f"Processing PR #{number}")
                         if pr is None:
@@ -691,13 +696,29 @@ class RepositoryPool:
                 self._locks_registry[full_name] = Lock()
             return self._locks_registry[full_name]
 
-    def get_repository(self, full_name, **kwargs) -> Repository:
-        """Retrieve a repository from the pool or create a new one if it doesn't exist."""
+    def get_repository(self, full_name, github_instance=None, **kwargs) -> Repository:
+        """
+        Retrieve a repository from the pool or create a new one if it doesn't exist.
+        
+        If you are using github_install_id to generate a new repository object, you should pass new github_instance to the function.
+        Otherwise the default github_instance within the pool might not fit to the new repository object.
+        """
+
         if full_name in self._pool:
+            # repo = self._pool[full_name]
+            # repo.update_last_read_time()
+            # if github_instance is not None:
+            #     repo.set_github(github_instance)
+            # return repo
             return self._pool[full_name]
+        
         repo_lock = self._get_repo_lock(full_name)
         with repo_lock:
             if full_name not in self._pool:
-                self._pool[full_name] = Repository(
-                    full_name, self.github_instance, **kwargs)
+                if github_instance is not None:
+                    repo = Repository(full_name, github_instance, **kwargs)
+                else:
+                    repo = Repository(full_name, self.github_instance, **kwargs)
+                self._pool[full_name] = repo
+
         return self._pool[full_name]
