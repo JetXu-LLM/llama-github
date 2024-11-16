@@ -159,14 +159,88 @@ class Repository:
         """
         file_key = f"{file_path}/{sha}" if sha is not None else file_path
 
-        # Skip binary and system files
+        # Skip files that don't need processing
         if any(file_path.endswith(ext) for ext in [
-            '.exe', '.dll', '.so', '.dylib', '.bin', 
-            '.png', '.jpg', '.jpeg', '.gif', '.ico',
-            '.mp3', '.mp4', '.avi', '.mov', '.pdf',
-            '.DS_Store'
-        ]) or '/.' in file_path:
-            logger.debug(f"Skipping binary or system file: {file_path}")
+            # Package manager and dependencies
+            '.lock', '.pnpm-lock.yaml', 'package-lock.json', 'Gemfile.lock', 
+            'poetry.lock', 'Cargo.lock', 'composer.lock',
+            '.pyc', '.pyo', 'requirements.txt',
+            
+            # Binaries and compiled files
+            '.exe', '.dll', '.so', '.dylib', '.bin', '.obj', '.o', '.a', 
+            '.lib', '.jar', '.war', '.ear', '.class', '.pdb', '.ilk', '.exp',
+            '.apk', '.aab', '.ipa',  # Mobile apps
+            '.wasm',  # WebAssembly
+            
+            # Media and compressed files
+            '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.tiff', '.webp',
+            '.svg', '.eps', '.psd', '.ai', '.sketch',
+            '.mp3', '.mp4', '.wav', '.flac', '.ogg', '.m4a',
+            '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv',
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.tgz',
+            
+            # System and hidden files
+            '.DS_Store', 'Thumbs.db', '.dockerignore',
+            '.gitattributes', '.gitmodules',
+            
+            # Documentation and resource files
+            '.min.js', '.min.css', '.map', '.po', '.mo', '.pot',
+            '.ttf', '.otf', '.eot', '.woff', '.woff2',  # Fonts
+            
+            # Configuration and data files
+            '.conf', '.config', '.cfg', '.ini',
+            '.sqlite', '.db', '.mdb', '.sql',
+            '.pb', '.pbtxt',  # Protocol buffers
+            '.ipynb',  # Jupyter notebooks
+            '.pkl', '.pickle',  # Python serialized objects
+            '.tfrecords', '.tf',  # TensorFlow files
+            '.onnx',  # ONNX models
+            '.h5', '.hdf5',  # HDF5 files
+            '.npy', '.npz',  # NumPy files
+            
+            # Build outputs
+            '.min.js', '.min.css',
+            '.bundle.js', '.bundle.css',
+            '.chunk.js', '.chunk.css'
+            
+        ]) or any(pattern in file_path for pattern in [
+            # Special directories
+            '/node_modules/',
+            '/__pycache__/',
+            '/.git/',
+            '/.idea/',
+            '/.vscode/',
+            '/.vs/',
+            '/.svn/',
+            '/.hg/',
+            '/dist/',
+            '/build/',
+            '/target/',
+            '/out/',
+            '/bin/',
+            '/obj/',
+            '/Debug/',
+            '/Release/',
+            '/.next/',
+            '/.nuxt/',
+            '/vendor/',
+            '/venv/',
+            '/.env',
+            '/coverage/',
+            '/logs/',
+            '/.github/',
+            '/assets/',
+            '/public/assets/',
+            '/static/assets/',
+            '/.pytest_cache/',
+            '/.sass-cache/',
+            '/.parcel-cache/',
+            '/.cache/',
+            '/tmp/',
+            '/temp/'
+        ]):
+            logger.debug(f"Skipping non-processable file: {file_path}")
             return None
 
         if file_key not in self._file_contents:  # Check if file content has already been fetched
@@ -557,7 +631,7 @@ class Repository:
 
                             # Generate custom diff with specified context lines
                             if base_content is None and head_content is None:
-                                custom_diff = ''
+                                custom_diff = '[SKIPPED] File type not suitable for diff analysis'
                             else:
                                 custom_diff = DiffGenerator.generate_custom_diff(base_content, head_content, context_lines)
                                 if not custom_diff or custom_diff.strip() == '':
