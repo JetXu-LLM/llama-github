@@ -164,7 +164,7 @@ class Repository:
             # Package manager and dependencies
             '.lock', '.pnpm-lock.yaml', 'package-lock.json', 'Gemfile.lock', 
             'poetry.lock', 'Cargo.lock', 'composer.lock',
-            '.pyc', '.pyo', 'requirements.txt',
+            '.pyc', '.pyo', 'requirements.txt', '.gitignore',
             
             # Binaries and compiled files
             '.exe', '.dll', '.so', '.dylib', '.bin', '.obj', '.o', '.a', 
