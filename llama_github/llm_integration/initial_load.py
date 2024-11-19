@@ -68,8 +68,8 @@ class LLMManager:
             self.model_type = "Custom_langchain_llm"
         elif mistral_api_key is not None and mistral_api_key != "" and self.llm is None:
             logger.info("Initializing Mistral API...")
-            self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-large-latest")
-            self.llm_simple = ChatMistralAI(mistral_api_key=mistral_api_key, model="open-codestral-mamba")
+            self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-large-2407")
+            self.llm_simple = ChatMistralAI(mistral_api_key=mistral_api_key, model="open-mistral-nemo")
             self.model_type = "OpenAI"
         elif openai_api_key is not None and openai_api_key != "" and self.llm is None:
             logger.info("Initializing OpenAI API...")
