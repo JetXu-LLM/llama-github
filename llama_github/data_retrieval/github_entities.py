@@ -185,7 +185,7 @@ class Repository:
             '.gitattributes', '.gitmodules',
             
             # Documentation and resource files
-            '.min.js', '.min.css', '.map', '.po', '.mo', '.pot',
+            '.min.js', '.min.css', '.map', '.po', '.mo', '.pot', '.drawio',
             '.ttf', '.otf', '.eot', '.woff', '.woff2',  # Fonts
             
             # Configuration and data files
