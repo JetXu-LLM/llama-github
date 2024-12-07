@@ -161,52 +161,54 @@ class Repository:
 
         # Skip files that don't need processing
         if any(file_path.endswith(ext) for ext in [
-            # Package manager and dependencies
-            '.lock', '.pnpm-lock.yaml', 'package-lock.json', 'Gemfile.lock', 
-            'poetry.lock', 'Cargo.lock', 'composer.lock',
-            '.pyc', '.pyo', 'requirements.txt', '.gitignore',
-            
-            # Binaries and compiled files
-            '.exe', '.dll', '.so', '.dylib', '.bin', '.obj', '.o', '.a', 
+            # Binary and Compiled Files
+            '.exe', '.dll', '.so', '.dylib', '.bin', '.obj', '.o', '.a',
             '.lib', '.jar', '.war', '.ear', '.class', '.pdb', '.ilk', '.exp',
-            '.apk', '.aab', '.ipa',  # Mobile apps
-            '.wasm',  # WebAssembly
+            '.apk', '.aab', '.ipa', '.wasm',
             
-            # Media and compressed files
+            # Media Files
             '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.tiff', '.webp',
             '.svg', '.eps', '.psd', '.ai', '.sketch',
             '.mp3', '.mp4', '.wav', '.flac', '.ogg', '.m4a',
             '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv',
-            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            '.ttf', '.otf', '.eot', '.woff', '.woff2',
+            
+            # Compressed and Binary Data
             '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.tgz',
+            '.pkl', '.pickle',
+            '.npy', '.npz',
+            '.h5', '.hdf5',
             
-            # System and hidden files
-            '.DS_Store', 'Thumbs.db', '.dockerignore',
-            '.gitattributes', '.gitmodules',
+            # Lock Files and Dependencies
+            '.lock', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+            'Gemfile.lock', 'poetry.lock', 'Cargo.lock', 'composer.lock',
             
-            # Documentation and resource files
-            '.min.js', '.min.css', '.map', '.po', '.mo', '.pot', '.drawio',
-            '.ttf', '.otf', '.eot', '.woff', '.woff2',  # Fonts
+            # Compiled Python
+            '.pyc', '.pyo',
             
-            # Configuration and data files
-            '.conf', '.config', '.cfg', '.ini',
-            '.sqlite', '.db', '.mdb', '.sql',
-            '.pb', '.pbtxt',  # Protocol buffers
-            '.ipynb',  # Jupyter notebooks
-            '.pkl', '.pickle',  # Python serialized objects
-            '.tfrecords', '.tf',  # TensorFlow files
-            '.onnx',  # ONNX models
-            '.h5', '.hdf5',  # HDF5 files
-            '.npy', '.npz',  # NumPy files
+            # System and Hidden Files
+            '.DS_Store', 'Thumbs.db',
             
-            # Build outputs
+            # Generated Code Files
+            '.g.dart', '.freezed.dart',
+            '.pb.go',
+            '_pb2.py', '_pb2_grpc.py',
+            '.generated.ts', '.generated.tsx',
+            '.proto.ts', '.proto.js',
             '.min.js', '.min.css',
             '.bundle.js', '.bundle.css',
-            '.chunk.js', '.chunk.css'
+            '.chunk.js', '.chunk.css',
+            
+            # IDE Generated
+            '.pbxproj', '.xcworkspacedata',
+            '.csproj.user', '.suo',
+            '.iml', '.ipr', '.iws',
+            
+            # Map Files
+            '.map', '.js.map', '.css.map'
             
         ]) or any(pattern in file_path for pattern in [
-            # Special directories
-            '/node_modules/',
+            # Cache and Temporary Directories
             '/__pycache__/',
             '/.git/',
             '/.idea/',
@@ -214,31 +216,52 @@ class Repository:
             '/.vs/',
             '/.svn/',
             '/.hg/',
-            '/dist/',
-            '/build/',
-            '/target/',
-            '/out/',
-            '/bin/',
-            '/obj/',
-            '/Debug/',
-            '/Release/',
-            '/.next/',
-            '/.nuxt/',
-            '/vendor/',
-            '/venv/',
-            '/.env',
-            '/coverage/',
-            '/logs/',
-            '/.github/',
-            '/assets/',
-            '/public/assets/',
-            '/static/assets/',
-            '/.pytest_cache/',
             '/.sass-cache/',
             '/.parcel-cache/',
             '/.cache/',
             '/tmp/',
-            '/temp/'
+            '/temp/',
+            
+            # Package Manager Directories
+            '/node_modules/',
+            '/bower_components/',
+            
+            # Test Coverage and Reports
+            '/coverage/',
+            '/.nyc_output/',
+            '/.pytest_cache/',
+            '/.tox/',
+            
+            # Environment and Runtime
+            '/venv/',
+            '/.env/',
+            '/.virtualenv/',
+            
+            # Framework Generated
+            '/.dart_tool/',
+            '/.pub-cache/',
+            '/.angular/',
+            '/.nuxt/',
+            '/.next/',
+            '/.ipynb_checkpoints/',
+            
+            # CI/CD
+            '/.github/workflows/',
+            '/.gitlab/ci/',
+            '/.circleci/',
+            
+            # Logs
+            '/logs/',
+            '/log/',
+            
+            # Binary Assets
+            '/assets/images/',
+            '/assets/fonts/',
+            '/assets/media/',
+            '/public/images/',
+            '/public/fonts/',
+            '/static/images/',
+            '/static/fonts/'
         ]):
             logger.debug(f"Skipping non-processable file: {file_path}")
             return None
