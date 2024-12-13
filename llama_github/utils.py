@@ -163,7 +163,7 @@ class CodeAnalyzer:
         try:
             tree = ast.parse(code_str)
             return ast.dump(tree)
-        except SyntaxError:
+        except Exception:
             logger.error("Syntax error in the provided code")
             return None
 
@@ -188,7 +188,7 @@ class CodeAnalyzer:
 
         try:
             tree = ast.parse(code_str)
-        except SyntaxError as e:
+        except Exception as e:
             logger.error(f"Syntax error in the provided code: {e}")
             import_info["errors"].append(str(e))
             return import_info

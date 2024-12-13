@@ -669,10 +669,10 @@ class Repository:
                                         custom_diff = ''
 
                             # Categorize code changes
-                            change_categories = CodeAnalyzer.categorize_change(custom_diff)
+                            # change_categories = CodeAnalyzer.categorize_change(custom_diff)
 
                             # Extract imports from head content
-                            related_modules = CodeAnalyzer.extract_imports(head_content) if language == 'Python' and head_content else []
+                            # related_modules = CodeAnalyzer.extract_imports(head_content) if language == 'Python' and head_content else []
 
                             # Build file change entry
                             file_change = {
@@ -682,9 +682,9 @@ class Repository:
                                 "language": language,
                                 "additions": additions,
                                 "deletions": deletions,
-                                "changes": changes,
-                                "change_categories": change_categories,
-                                "related_modules": related_modules
+                                "changes": changes #,
+                                # "change_categories": change_categories,
+                                # "related_modules": related_modules
                             }
 
                             # Check for dependency changes
