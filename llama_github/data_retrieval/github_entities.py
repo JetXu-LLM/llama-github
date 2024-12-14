@@ -205,8 +205,19 @@ class Repository:
             '.iml', '.ipr', '.iws',
             
             # Map Files
-            '.map', '.js.map', '.css.map'
-            
+            '.map', '.js.map', '.css.map',
+
+            # PowerBI Binary and Cache Files
+            '.pbix',       # PowerBI packaged report file - binary format containing report, data model and resources
+            '.pbit',       # PowerBI template file - binary format for report templates
+            '.abf',        # Analysis Services Backup File - contains model and data cache
+
+            # PowerBI Dataset Files
+            '.bim',        # Analysis Services Tabular Model file - contains data model definitions
+            '.database',   # PowerBI database definition file - auto-generated
+            '.deploymentoptions',  # Deployment configuration file - auto-generated
+            '.deploymenttargets',  # Deployment targets file - auto-generated
+
         ]) or any(pattern in file_path for pattern in [
             # Cache and Temporary Directories
             '/__pycache__/',
@@ -253,6 +264,11 @@ class Repository:
             # Logs
             '/logs/',
             '/log/',
+
+            # PowerBI Specific Directories
+            '/.pbi/',           # PowerBI cache and temporary files directory
+            '/Dataset/.pbi/',   # PowerBI dataset cache directory
+            '/.pbixproj/',      # PowerBI project configuration directory - contains auto-generated files
             
             # Binary Assets
             '/assets/images/',
@@ -669,10 +685,10 @@ class Repository:
                                         custom_diff = ''
 
                             # Categorize code changes
-                            # change_categories = CodeAnalyzer.categorize_change(custom_diff)
+                            change_categories = CodeAnalyzer.categorize_change(custom_diff)
 
                             # Extract imports from head content
-                            # related_modules = CodeAnalyzer.extract_imports(head_content) if language == 'Python' and head_content else []
+                            related_modules = CodeAnalyzer.extract_imports(head_content) if language == 'Python' and head_content else []
 
                             # Build file change entry
                             file_change = {
@@ -682,9 +698,9 @@ class Repository:
                                 "language": language,
                                 "additions": additions,
                                 "deletions": deletions,
-                                "changes": changes #,
-                                # "change_categories": change_categories,
-                                # "related_modules": related_modules
+                                "changes": changes,
+                                "change_categories": change_categories,
+                                "related_modules": related_modules
                             }
 
                             # Check for dependency changes
@@ -706,7 +722,7 @@ class Repository:
 
                         self._prs[number] = pr_data
                         logger.debug(f"Collected details for PR #{number}: {pr.title}")
-                    except GithubException as e:
+                    except Exception as e:
                         logger.exception(f"Error getting PR content for #{number} in repository {self.full_name}")
         self.update_last_read_time()
         return self._prs[number]
