@@ -8,7 +8,6 @@ pydantic
 requests
 transformers
 urllib3
-sys
 platform
 subprocess
 pydantic_core
