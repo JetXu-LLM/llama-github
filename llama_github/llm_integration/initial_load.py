@@ -70,7 +70,7 @@ class LLMManager:
             self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-large-latest")
             self.llm_simple = ChatMistralAI(
                 mistral_api_key=mistral_api_key, 
-                model="open-mistral-nemo",
+                model="mistral-small-latest",
                 temperature=0.2
             )
             self.model_type = "OpenAI"
