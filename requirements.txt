@@ -1,6 +1,5 @@
 aiohttp
 asyncio
-dataclasses
 PyGithub
 langchain
 numpy
@@ -8,8 +7,6 @@ pydantic
 requests
 transformers
 urllib3
-platform
-subprocess
 pydantic_core
 langchain_openai
 langchain_mistralai
