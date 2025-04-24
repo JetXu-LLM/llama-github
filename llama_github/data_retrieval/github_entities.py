@@ -263,8 +263,11 @@ class Repository:
             
             # Logs
             '/logs/',
-            '/log/',
-
+            '/_logs/',
+            '/var/log/',
+            '/log/files/',
+            '/application/log/',
+            
             # PowerBI Specific Directories
             '/.pbi/',           # PowerBI cache and temporary files directory
             '/Dataset/.pbi/',   # PowerBI dataset cache directory
