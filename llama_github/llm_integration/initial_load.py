@@ -67,10 +67,10 @@ class LLMManager:
         elif mistral_api_key is not None and mistral_api_key != "" and self.llm is None:
             logger.info("Initializing Codestral API...")
             from langchain_mistralai.chat_models import ChatMistralAI
-            self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-medium-2505")
+            self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-medium-latest", temperature=0.3)
             self.llm_simple = ChatMistralAI(
-                mistral_api_key=mistral_api_key, 
-                model="mistral-small-latest",
+                mistral_api_key=mistral_api_key,
+                model="devstral-small-latest",
                 temperature=0.2
             )
             self.model_type = "OpenAI"
