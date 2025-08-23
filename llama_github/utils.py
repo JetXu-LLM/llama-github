@@ -11,12 +11,49 @@ import ast
 class DiffGenerator:
     """
     A class for generating custom diffs between two pieces of content.
+    It enhances the standard unified diff by adding function/class context to hunk headers,
+    similar to `git diff`, in a fail-safe manner.
     """
+
+    # A pre-compiled list of regex patterns to find function/class definitions.
+    # This is the core mechanism that mimics Git's `xfuncname` feature.
+    # It covers a wide range of common languages to provide broad, out-of-the-box support.
+    _FUNC_CONTEXT_PATTERNS = [
+        re.compile(r'^\s*(def|class)\s+.*', re.IGNORECASE),  # Python
+        re.compile(r'^\s*(public|private|protected|static|final|native|synchronized|abstract|transient|volatile|strictfp|async|function|class|interface|enum|@|implements|extends)'),  # Java, JS, TS, PHP, C#
+        re.compile(r'^\s*(func|fn|impl|trait|struct|enum|mod)\s+.*', re.IGNORECASE), # Go, Rust
+        re.compile(r'^\s*(def|class|module)\s+.*', re.IGNORECASE), # Ruby
+        re.compile(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*\s+)*[a-zA-Z_][a-zA-Z0-9_]*\s*\(.*\)\s*\{'), # C, C++ style function definitions
+        re.compile(r'^sub\s+.*'), # Perl
+    ]
+
+    @staticmethod
+    def _find_context(line_index: int, lines: List[str]) -> str:
+        """
+        Search upwards from a given line index to find the nearest function/class context.
+
+        Args:
+            line_index (int): The 0-based index to start searching upwards from.
+            lines (List[str]): The content of the file, as a list of lines.
+
+        Returns:
+            str: The found context line, stripped of whitespace, or an empty string if not found.
+        """
+        # Search from the target line upwards to the beginning of the file.
+        for i in range(line_index, -1, -1):
+            line = lines[i]
+            # Check the line against all our predefined patterns.
+            for pattern in DiffGenerator._FUNC_CONTEXT_PATTERNS:
+                if pattern.search(line):
+                    return line.strip()
+        return "" # Return empty string if no context is found.
 
     @staticmethod
     def generate_custom_diff(base_content: str, head_content: str, context_lines: int) -> str:
         """
-        Generate a custom diff between two pieces of content with specified context lines.
+        Generate a custom diff between two pieces of content with specified context lines,
+        and automatically add function/class context to hunk headers, similar to `git diff`.
+        This method is designed to be fail-safe; if context addition fails, it returns the standard diff.
 
         Args:
             base_content (str): The original content.
@@ -24,7 +61,7 @@ class DiffGenerator:
             context_lines (int): The number of context lines to include in the diff.
 
         Returns:
-            str: A string representation of the unified diff.
+            str: A string representation of the unified diff, preferably with hunk headers.
 
         Raises:
             ValueError: If context_lines is negative.
@@ -40,15 +77,69 @@ class DiffGenerator:
             # File is deleted
             return "".join(f"- {line}\n" for line in base_content.splitlines())
 
+        # Use empty strings for None content to ensure difflib handles them correctly
+        # as file additions or deletions. This is more robust and aligns with difflib's expectations.
+        base_content = base_content or ""
+        head_content = head_content or ""
+
         base_lines: List[str] = base_content.splitlines()
         head_lines: List[str] = head_content.splitlines()
 
+        # Generate the standard unified diff. This part is considered stable.
+        diff: List[str] = list(difflib.unified_diff(
+            base_lines,
+            head_lines,
+            n=context_lines,
+            lineterm=''
+        ))
+
+        if not diff:
+            return "" # No differences found, return early.
+
+        # --- Start of the fail-safe enhancement logic ---
+        # This entire block attempts to add context to hunk headers.
+        # If any exception occurs here, we catch it and return the original, un-enhanced diff.
+        # This ensures the function is always reliable (Pareto improvement).
         try:
-            diff: List[str] = list(difflib.unified_diff(base_lines, head_lines, n=context_lines, lineterm=''))
-            return '\n'.join(diff)
+            enhanced_diff = []
+            # Regex to parse the original line number from a hunk header.
+            # e.g., from "@@ -35,7 +35,7 @@" it captures "35".
+            hunk_header_re = re.compile(r'^@@ -(\d+)(?:,\d+)? .*')
+
+            for line in diff:
+                match = hunk_header_re.match(line)
+                if match:
+                    # This is a hunk header line.
+                    # The line number from the regex is 1-based.
+                    start_line_num = int(match.group(1))
+
+                    # The index is 0-based, so we subtract 1.
+                    # We search from the line where the change starts, or the line before it.
+                    context_line_index = max(0, start_line_num - 1)
+                    context = DiffGenerator._find_context(context_line_index, base_lines)
+
+                    if context:
+                        # If context was found, append it to the hunk header.
+                        enhanced_diff.append(f"{line} {context}")
+                    else:
+                        # Otherwise, use the original hunk header.
+                        enhanced_diff.append(line)
+                else:
+                    # This is not a hunk header, just a regular diff line (+, -, ' ').
+                    enhanced_diff.append(line)
+            
+            # If the enhancement process completes successfully, return the result.
+            return '\n'.join(enhanced_diff)
+
         except Exception as e:
-            logger.exception(f"Error generating diff: {str(e)}")
-            return ""
+            # If any error occurred during the enhancement, log a warning and fall back.
+            logger.warning(
+                f"Could not add hunk header context due to an unexpected error: {str(e)}. "
+                "Falling back to standard diff output."
+            )
+            # --- Fallback mechanism ---
+            # Return the original, unmodified diff generated by difflib.
+            return '\n'.join(diff)
 
 
 class DataAnonymizer:
