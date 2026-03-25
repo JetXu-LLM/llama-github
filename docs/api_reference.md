@@ -1,82 +1,96 @@
 # API Reference
 
-This document provides a comprehensive reference for the public API of the `llama-github` library. It covers the main classes, methods, and their parameters.
+## `GithubRAG`
 
-## `GithubRAG` Class
+Main entrypoint for retrieval and answer generation.
 
-The `GithubRAG` class is the main entry point for using the `llama-github` library. It provides methods for initializing the library, retrieving context, and configuring various aspects of the retrieval process.
+### Constructor
 
-### `__init__(self, github_access_token=None, github_app_credentials=None, openai_api_key=None, huggingface_token=None, jina_api_key=None, open_source_models_hg_dir=None, embedding_model=None, rerank_model=None, llm=None, **kwargs)`
+```python
+GithubRAG(
+    github_access_token=None,
+    github_app_credentials=None,
+    openai_api_key=None,
+    mistral_api_key=None,
+    huggingface_token=None,
+    jina_api_key=None,
+    open_source_models_hg_dir=None,
+    embedding_model=None,
+    rerank_model=None,
+    llm=None,
+    simple_mode=False,
+    **kwargs,
+)
+```
 
-Initializes a new instance of the `GithubRAG` class.
+Important parameters:
 
-#### Parameters
+- `github_access_token`: personal access token for GitHub REST and search APIs
+- `github_app_credentials`: app-based authentication credentials
+- `openai_api_key`: OpenAI chat provider
+- `mistral_api_key`: Mistral chat provider
+- `llm`: injected LangChain-compatible chat model
+- `simple_mode`: skip embedding and reranker loading
+- `repo_cleanup_interval`: optional repository cache cleanup interval
+- `repo_max_idle_time`: optional repository cache idle timeout
 
-- `github_access_token` (str, optional): GitHub access token for authentication. Defaults to `None`.
-- `github_app_credentials` (GitHubAppCredentials, optional): Credentials for GitHub App authentication. Defaults to `None`.
-- `openai_api_key` (str, optional): API key for OpenAI services. Recommended for using GPT-4-turbo. Defaults to `None`.
-- `huggingface_token` (str, optional): Token for Hugging Face services. Recommended. Defaults to `None`.
-- `jina_api_key` (str, optional): API key for Jina AI services. Used for high concurrency production deployment. Defaults to `None`.
-- `open_source_models_hg_dir` (str, optional): Path to open-source models from Hugging Face to replace OpenAI. Defaults to `None`.
-- `embedding_model` (str, optional): Name of the custom embedding model from Hugging Face. Defaults to the value specified in the configuration.
-- `rerank_model` (str, optional): Name of the custom reranking model from Hugging Face. Defaults to the value specified in the configuration.
-- `llm` (Any, optional): Custom LangChain LLM chat object to replace OpenAI or open-source models from Hugging Face. Defaults to `None`.
-- `**kwargs`: Additional keyword arguments for configuring the repository pool caching mechanism.
-  - `repo_cleanup_interval` (int, optional): Cache cleanup interval in seconds. Defaults to the value specified in the configuration.
-  - `repo_max_idle_time` (int, optional): Maximum idle time for a cached repository in seconds. Defaults to the value specified in the configuration.
+### `retrieve_context(query, simple_mode=None)`
 
-### `retrieve_context(self, query, simple_mode=False)`
+Returns:
 
-Retrieves relevant context from GitHub based on the provided query.
+```python
+List[Dict[str, str]]
+```
 
-#### Parameters
+Each item contains at least:
 
-- `query` (str): The query or question to retrieve context for.
-- `simple_mode` (bool, optional): Flag to enable simple mode retrieval. In simple mode, only a Google search is conducted based on the user's question. Defaults to `False`.
+- `context`
+- `url`
 
-#### Returns
+### `async_retrieve_context(query, simple_mode=None)`
 
-- `List[str]`: A list of relevant context strings retrieved from GitHub.
+Async version of `retrieve_context()`.
 
-### `async_retrieve_context(self, query, simple_mode=False)`
+### `answer_with_context(query, contexts=None, simple_mode=False)`
 
-Asynchronously retrieves relevant context from GitHub based on the provided query.
+Generates an answer from injected contexts or from newly retrieved contexts if `contexts` is `None`.
 
-#### Parameters
+Accepted context item shapes:
 
-- `query` (str): The query or question to retrieve context for.
-- `simple_mode` (bool, optional): Flag to enable simple mode retrieval. In simple mode, only a Google search is conducted based on the user's question. Defaults to `False`.
+- `{"context": "...", "url": "..."}`
+- `{"content": "...", "url": "..."}` for backward compatibility
 
-#### Returns
+### `async_answer_with_context(query, contexts=None, simple_mode=False)`
 
-- `List[str]`: A list of relevant context strings retrieved from GitHub.
+Async version of `answer_with_context()`.
 
-## `GitHubAppCredentials` Class
+## `GitHubAppCredentials`
 
-The `GitHubAppCredentials` class represents the credentials required for authenticating with a GitHub App.
+```python
+GitHubAppCredentials(
+    app_id: int,
+    private_key: str,
+    installation_id: int,
+)
+```
 
-### `__init__(self, app_id, private_key, installation_id)`
+Used with `GithubRAG(github_app_credentials=...)`.
 
-Initializes a new instance of the `GitHubAppCredentials` class.
+## `Repository.get_pr_content(number, pr=None, context_lines=10, force_update=False)`
 
-#### Parameters
+Available from:
 
-- `app_id` (int): The ID of the GitHub App.
-- `private_key` (str): The private key associated with the GitHub App.
-- `installation_id` (int): The ID of the GitHub App installation.
+```python
+repo = github_rag.RepositoryPool.get_repository("owner/repo")
+```
 
-## `configure_logging(level=logging.INFO)`
+Returns a dictionary containing:
 
-Configures the logging level for the `llama-github` library.
+- `pr_metadata`
+- `related_issues`
+- `commits`
+- `file_changes`
+- `ci_cd_results`
+- `interactions`
 
-#### Parameters
-
-- `level` (int, optional): The desired logging level. Defaults to `logging.INFO`.
-
-## Conclusion
-
-This API reference provides an overview of the main classes and methods available in the `llama-github` library. It serves as a complement to the usage guide and helps developers understand the available functionality and how to interact with the library programmatically.
-
-For more detailed information on how to use these classes and methods, along with code examples, please refer to the [usage guide](usage.md).
-
-If you have any questions or need further assistance, please open an issue on the [GitHub repository](https://github.com/JetXu-LLM/llama-github/issues) or reach out to the project maintainers.
+The method returns `None` if the PR cannot be retrieved.

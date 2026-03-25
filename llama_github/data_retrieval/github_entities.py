@@ -5,13 +5,9 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from llama_github.logger import logger
 from llama_github.github_integration.github_auth_manager import ExtendedGithub
-from llama_github.utils import DiffGenerator
-
 import time
 import re
-import json
 from dateutil import parser
-from datetime import timezone
 import base64
 import requests
 
@@ -82,11 +78,14 @@ class Repository:
         """
         Retrieves the README content of the repository using a singleton design pattern.
         """
+        repo = self.repo
+        if repo is None:
+            return None
         if self._readme is None:  # Check if README content has already been fetched
             with self._readme_lock:  # Locking for write action
                 if self._readme is None:  # Check if README content has already been fetched after get lock
                     try:
-                        readme = self.repo.get_readme()
+                        readme = repo.get_readme()
                         self._readme = readme.decoded_content.decode("utf-8")
                     except GithubException as e:
                         logger.exception(
@@ -100,6 +99,8 @@ class Repository:
         return self.get_repo()
     
     def set_github(self, github_instance: ExtendedGithub):
+        if github_instance is None:
+            return
         self._github = github_instance
         with self._repo_lock:  # Locking for write action
             self._repo = self._github.get_repo(self.full_name)
@@ -108,6 +109,12 @@ class Repository:
         """
         Retrieves the Github Repo object of the repository using a singleton design pattern.
         """
+        if self._github is None:
+            logger.error(
+                "GitHub credentials are required to retrieve repository '%s'.",
+                self.full_name,
+            )
+            return None
         if self._repo is None:  # Check if repo object has already been fetched
             with self._repo_lock:  # Locking for write action
                 if self._repo is None:
@@ -289,10 +296,13 @@ class Repository:
             with self._file_contents_lock:  # Locking for thread-safe write action
                 if file_key not in self._file_contents:  # Double-check after acquiring the lock
                     try:
+                        repo = self.repo
+                        if repo is None:
+                            return None
                         if sha is not None:
-                            file_content = self.repo.get_contents(file_path, ref=sha)
+                            file_content = repo.get_contents(file_path, ref=sha)
                         else:
-                            file_content = self.repo.get_contents(file_path)
+                            file_content = repo.get_contents(file_path)
                         
                         # Handle directory case
                         if isinstance(file_content, list):
@@ -554,7 +564,10 @@ class Repository:
                     try:
                         logger.debug(f"Processing PR #{number}")
                         if pr is None:
-                            pr = self.repo.get_pull(number)
+                            repo = self.repo
+                            if repo is None:
+                                return None
+                            pr = repo.get_pull(number)
                         pr_files = self._github.get_pr_files(self.full_name, pr.number)
                         pr_comments = self._github.get_pr_comments(self.full_name, pr.number)
 
@@ -769,7 +782,7 @@ class Repository:
                     except Exception as e:
                         logger.exception(f"Error getting PR content for #{number} in repository {self.full_name}")
         self.update_last_read_time()
-        return self._prs[number]
+        return self._prs.get(number)
 
     def __str__(self):
         """
@@ -799,31 +812,16 @@ class Repository:
 
 
 class RepositoryPool:
-    _instance_lock = Lock()
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:  # First check (unlocked)
-            with cls._instance_lock:  # Acquire lock
-                if cls._instance is None:  # Second check (locked)
-                    cls._instance = super(RepositoryPool, cls).__new__(cls)
-        return cls._instance
-
     def __init__(self, github_instance, cleanup_interval=3600, max_idle_time=86400):
-        if not hasattr(self, 'initialized'):
-            with self._instance_lock:   # Prevent re-initialization
-                if not hasattr(self, 'initialized'):
-                    self.initialized = True
-                    self._locks_registry = {}  # A registry for repository-specific locks
-                    self._registry_lock = Lock()  # A lock to protect the locks registry
-                    self._pool = {}  # The repository pool
-                    self.github_instance = github_instance
-                    self.cleanup_interval = cleanup_interval  # How often to run cleanup in seconds
-                    self.max_idle_time = max_idle_time  # Maximum idle time in seconds
-                    self._cleanup_thread = Thread(
-                        target=self._cleanup, daemon=True)
-                    self._stop_event = Event()
-                    self._cleanup_thread.start()
+        self._locks_registry = {}
+        self._registry_lock = Lock()
+        self._pool = {}
+        self.github_instance = github_instance
+        self.cleanup_interval = cleanup_interval
+        self.max_idle_time = max_idle_time
+        self._stop_event = Event()
+        self._cleanup_thread = Thread(target=self._cleanup, daemon=True)
+        self._cleanup_thread.start()
 
     def _cleanup(self):  # Internal method for cleaning up idle repository objects' cache content, not real delete repository objects
         """Periodically checks and removes idle repository objects."""
@@ -836,7 +834,7 @@ class RepositoryPool:
                         ((current_time - repo.creation_time).total_seconds() > 7 * self.max_idle_time and
                          (current_time - repo.last_read_time).total_seconds() > (self.max_idle_time // 4) + 1):
                         # release the lock due to object already created
-                        del self._locks_registry[full_name]
+                        self._locks_registry.pop(full_name, None)
                         # clear the cache content of repository object
                         self._pool[full_name].clear_cache()
             time.sleep(self.cleanup_interval)
@@ -844,6 +842,8 @@ class RepositoryPool:
     def stop_cleanup(self):
         """Stops the cleanup thread."""
         self._stop_event.set()
+        if self._cleanup_thread.is_alive():
+            self._cleanup_thread.join(timeout=1)
 
     def _get_repo_lock(self, full_name):
         """Retrieve or create a lock for a specific repository."""
@@ -862,18 +862,19 @@ class RepositoryPool:
         """
 
         if full_name in self._pool:
-            # repo = self._pool[full_name]
-            # repo.update_last_read_time()
-            # if github_instance is not None:
-            #     repo.set_github(github_instance)
-            # return repo
-            return self._pool[full_name]
+            repo = self._pool[full_name]
+            if github_instance is not None:
+                repo.set_github(github_instance)
+                self.github_instance = github_instance
+            repo.update_last_read_time()
+            return repo
         
         repo_lock = self._get_repo_lock(full_name)
         with repo_lock:
             if full_name not in self._pool:
                 if github_instance is not None:
                     repo = Repository(full_name, github_instance, **kwargs)
+                    self.github_instance = github_instance
                 else:
                     repo = Repository(full_name, self.github_instance, **kwargs)
                 self._pool[full_name] = repo

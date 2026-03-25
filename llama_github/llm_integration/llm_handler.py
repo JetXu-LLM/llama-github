@@ -1,129 +1,119 @@
-# llm_handler.py
-# to do list
-# 1. add streaming output for invoke.
+from __future__ import annotations
 
-from llama_github.llm_integration.initial_load import LLMManager
-from langchain_core.prompts import ChatPromptTemplate, ChatMessagePromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
-from llama_github.config.config import config
-from llama_github.logger import logger
+from typing import Optional, Type
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import (
+    ChatMessagePromptTemplate,
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+)
 from pydantic import BaseModel
-from typing import Optional
-from langchain_openai import output_parsers
+
+from llama_github.config.config import config
+from llama_github.llm_integration.initial_load import LLMManager
+from llama_github.logger import logger
+
 
 class LLMHandler:
+    """
+    Lightweight adapter that turns user questions, history, and contexts into chat-model calls.
+
+    The handler keeps prompt construction centralized so the retrieval pipeline and
+    answer-generation pipeline share the same message formatting logic.
+    """
+
     def __init__(self, llm_manager: Optional[LLMManager] = None):
-        """
-        Initializes the LLMHandler class which is responsible for handling the interaction
-        with a language model (LLM) using the LangChain framework.
+        """Create a handler backed by an existing LLMManager or a default one."""
+        self.llm_manager = llm_manager if llm_manager is not None else LLMManager()
 
-        Attributes:
-            llm_manager (LLMManager): Manages interactions with the language model.
+    async def ainvoke(
+        self,
+        human_question: str,
+        chat_history: Optional[list[str]] = None,
+        context: Optional[list[str]] = None,
+        output_structure: Optional[Type[BaseModel]] = None,
+        prompt: str = config.get("general_prompt"),
+        simple_llm: bool = False,
+    ):
         """
-        if llm_manager is not None:
-            self.llm_manager = llm_manager
-        else:
-            self.llm_manager = LLMManager()
+        Invoke the configured chat model.
 
-    async def ainvoke(self, human_question: str, chat_history: Optional[list[str]] = None, context: Optional[list[str]] = None, output_structure: Optional[BaseModel] = None, prompt: str = config.get("general_prompt"), simple_llm=False) -> str:
-        """
-        Asynchronously invokes the language model with a given question, chat history, and context,
-        and returns the model's response.
-
-        Parameters:
-            human_question (str): The question or input from the human user.
-            chat_history (list[str]): A list of strings representing the chat history, where each
-                                      string is a message. This parameter is optional.
-            context (list[str]): A list of strings representing additional context for the model.
-                                 This parameter is optional.
-            output_structure: A langchain_core.pydantic_v1.BaseModel object to control desired 
-                              structure of the output from the language model.
-                              This parameter is optional and allows for more detailed control over
-                              the model's responses.
-            prompt (str): A template for the prompt to be used with the language model. Defaults
-                          to a general prompt defined in the configuration.
+        Args:
+            human_question: The current user question.
+            chat_history: Flat alternating user/assistant history.
+            context: Extra context snippets inserted as system messages.
+            output_structure: Optional pydantic schema for structured output.
+            prompt: System prompt template.
+            simple_llm: Prefer the lightweight model when available.
 
         Returns:
-            str: The response from the language model.
+            Structured output when `output_structure` is provided; otherwise a string response.
         """
         try:
-            if simple_llm and self.llm_manager.get_llm_simple() is not None:
-                llm = self.llm_manager.get_llm_simple()
-            else:
-                llm = self.llm_manager.get_llm()
-            if self.llm_manager.model_type == "OpenAI":
-                # Create a prompt template with placeholders for dynamic content.
-                prompt_template = ChatMessagePromptTemplate.from_template(
-                    role="system", template=prompt)
-                chat_prompt = ChatPromptTemplate.from_messages([
+            llm = (
+                self.llm_manager.get_llm_simple()
+                if simple_llm and self.llm_manager.get_llm_simple() is not None
+                else self.llm_manager.get_llm()
+            )
+            if llm is None:
+                raise RuntimeError(
+                    "No chat model is configured. Provide a compatible llm object or provider API key."
+                )
+
+            prompt_template = ChatMessagePromptTemplate.from_template(
+                role="system",
+                template=prompt,
+            )
+            chat_prompt = ChatPromptTemplate.from_messages(
+                [
                     prompt_template,
-                    MessagesPlaceholder(
-                        variable_name="history_messages", optional=True),
+                    MessagesPlaceholder(variable_name="history_messages", optional=True),
                     MessagesPlaceholder(variable_name="human_message"),
-                    MessagesPlaceholder(
-                        variable_name="context_messages", optional=True)
-                ])
+                    MessagesPlaceholder(variable_name="context_messages", optional=True),
+                ]
+            )
 
-                # Convert chat_history and context from [str] to their respective message types.
-                chat_history_messages = self._compose_context_messages(
-                    chat_history)
-                context_messages = self._compose_chat_history_messages(context)
-                human_question_message = HumanMessage(content=human_question)
+            chat_history_messages = self._compose_chat_history_messages(chat_history)
+            context_messages = self._compose_context_messages(context)
+            human_question_message = HumanMessage(content=human_question)
+            formatted_prompt = chat_prompt.format_prompt(
+                history_messages=chat_history_messages,
+                human_message=[human_question_message],
+                context_messages=context_messages,
+            )
 
-                prompt_params = {
-                    "history_messages": chat_history_messages,
-                    "human_message": [human_question_message],
-                    "context_messages": context_messages
-                }
+            chain = llm
+            if output_structure is not None:
+                if not hasattr(llm, "with_structured_output"):
+                    raise RuntimeError(
+                        f"{type(llm).__name__} does not support structured output."
+                    )
+                chain = llm.with_structured_output(output_structure)
 
-                # Format the prompt with the provided parameters.
-                formatted_prompt = chat_prompt.format_prompt(**prompt_params)
-                # Determine the processing chain based on the presence of an output structure.
-                if output_structure is not None:
-                    chain = llm.with_structured_output(output_structure)
-                else:
-                    chain = llm
-
-                # Invoke the chain and return the model's response.
-                try:
-                    response = await chain.ainvoke(formatted_prompt.to_messages())
-                except Exception as e:
-                    logger.exception(
-                        f"Call {'simple ' if simple_llm else ''}llm with #{human_question}# generated an exception:{e}")
-                    if output_structure is not None:
-                        response = await chain.ainvoke(formatted_prompt.to_messages())
-                return response
-        except Exception as e:
+            response = await chain.ainvoke(formatted_prompt.to_messages())
+            if output_structure is None and hasattr(response, "content"):
+                return response.content
+            return response
+        except Exception as exc:
             logger.exception(
-                f"Call llm with #{human_question}# generated an exception:{e}")
+                "Call %sllm with #%s# generated an exception: %s",
+                "simple " if simple_llm else "",
+                human_question,
+                exc,
+            )
+            if output_structure is not None:
+                raise
             return "An error occurred during processing."
 
-    def _compose_chat_history_messages(self, chat_history: list[str]) -> list:
-        """
-        Converts chat history from a list of strings to a list of alternating HumanMessage
-        and AIMessage objects, starting with HumanMessage.
-
-        Parameters:
-            chat_history (list[str]): The chat history as a list of strings.
-
-        Returns:
-            list: A list of alternating HumanMessage and AIMessage objects.
-        """
+    def _compose_chat_history_messages(self, chat_history: Optional[list[str]]) -> list:
+        """Convert flat alternating history strings into LangChain message objects."""
         messages = []
-        for i, message in enumerate(chat_history or []):
-            message_class = HumanMessage if i % 2 == 0 else AIMessage
+        for index, message in enumerate(chat_history or []):
+            message_class = HumanMessage if index % 2 == 0 else AIMessage
             messages.append(message_class(content=message))
         return messages
 
-    def _compose_context_messages(self, context: list[str]) -> list:
-        """
-        Converts context from a list of strings to a list of SystemMessage objects.
-
-        Parameters:
-            context (list[str]): The context as a list of strings.
-
-        Returns:
-            list: A list of SystemMessage objects.
-        """
+    def _compose_context_messages(self, context: Optional[list[str]]) -> list:
+        """Convert context strings into system messages so they stay separated from chat history."""
         return [SystemMessage(content=message) for message in context or []]

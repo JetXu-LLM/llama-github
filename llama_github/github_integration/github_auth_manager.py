@@ -1,345 +1,222 @@
-# To do list:
-# 1. add the mechanism for installation_access_token and github_instance refreshment in authenticate_with_app model
-# 2. add re-try mechanism for the API calls
-# 3. add the mechanism for the rate limit handling
-# 4. add the mechanism for the error handling
-# 5. add the mechanism for the logging
-# 6. add search issues functionality
-# 7. add search discussions functionality through Github GraphQL API
+from __future__ import annotations
 
-from github import Github, GithubIntegration
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Optional
+
 import requests
+from github import Auth, Github, GithubIntegration
 from requests.adapters import HTTPAdapter
 from requests.exceptions import HTTPError, RequestException
 from urllib3.util.retry import Retry
+
 from llama_github.logger import logger
 
 
 class GitHubAuthManager:
-    def __init__(self):
-        self.github_instance = None
-        self.access_token = None
-        self.app_id = None
-        self.private_key = None
-        self.installation_id = None
+    """Manage personal-token and GitHub-App authentication for `ExtendedGithub` clients."""
 
-    def authenticate_with_token(self, access_token):
-        """
-        Authenticate using a personal access token or an OAuth token.
-        Suitable for individual developers and applications using OAuth for authorization.
-        """
+    def __init__(self):
+        self.github_instance: Optional[ExtendedGithub] = None
+        self.access_token: Optional[str] = None
+        self.app_id: Optional[int] = None
+        self.private_key: Optional[str] = None
+        self.installation_id: Optional[int] = None
+        self._installation_token_expires_at: Optional[datetime] = None
+
+    def authenticate_with_token(self, access_token: str):
+        """Authenticate with a personal access token or OAuth token."""
         self.access_token = access_token
-        self.github_instance = ExtendedGithub(login_or_token=access_token)
+        self.github_instance = ExtendedGithub(access_token=access_token)
         return self.github_instance
 
-    def authenticate_with_app(self, app_id, private_key, installation_id):
+    def _refresh_installation_token(self, force: bool = False) -> Optional[str]:
         """
-        Authenticate using a GitHub App.
-        Suitable for integrations in organizational or enterprise environments.
+        Refresh the GitHub App installation token when it is missing or close to expiry.
         """
+        if not all([self.app_id, self.private_key, self.installation_id]):
+            return self.access_token
+
+        if (
+            not force
+            and self.access_token
+            and self._installation_token_expires_at is not None
+            and datetime.now(timezone.utc)
+            < self._installation_token_expires_at - timedelta(minutes=1)
+        ):
+            return self.access_token
+
+        app_auth = Auth.AppAuth(self.app_id, self.private_key)
+        integration = GithubIntegration(auth=app_auth)
+        authorization = integration.get_access_token(self.installation_id)
+        self.access_token = authorization.token
+        self._installation_token_expires_at = authorization.expires_at
+
+        if self.github_instance is not None:
+            self.github_instance.refresh_token(self.access_token)
+
+        return self.access_token
+
+    def authenticate_with_app(self, app_id: int, private_key: str, installation_id: int):
+        """Authenticate using a GitHub App and keep a refreshable installation token."""
         self.app_id = app_id
         self.private_key = private_key
         self.installation_id = installation_id
-        integration = GithubIntegration(app_id, private_key)
-        installation_access_token = integration.get_access_token(
-            installation_id).token
-        self.access_token = installation_access_token
+        self._refresh_installation_token(force=True)
         self.github_instance = ExtendedGithub(
-            login_or_token=installation_access_token)
+            access_token=self.access_token,
+            token_provider=self._refresh_installation_token,
+        )
         return self.github_instance
 
-    def close_connection(self):
-        """
-        Close the connection to GitHub to free up resources.
-        """
-        if self.github_instance:
-            self.github_instance = None
+    def refresh_app_auth_if_needed(self):
+        """Public helper for refreshing the app token in long-running processes."""
+        return self._refresh_installation_token(force=False)
 
-# Extended Github Class for powerful API calls - e.g. recursive call to get repo structure
+    def close_connection(self):
+        """Drop the cached client reference."""
+        self.github_instance = None
 
 
 class ExtendedGithub(Github):
-    def __init__(self, login_or_token):
-        self.access_token = login_or_token
-        super().__init__(login_or_token=login_or_token)
+    """
+    Thin PyGithub extension that adds token refresh and a few direct REST helpers.
+    """
 
-    def get_repo_structure(self, repo_full_name, branch='main') -> dict:
-        """
-        Get the structure of a repository (files and directories) recursively.
-        """
-        owner, repo_name = repo_full_name.split('/')
-        headers = {'Authorization': f'token {self.access_token}'}
+    def __init__(
+        self,
+        access_token: Optional[str],
+        token_provider: Optional[Callable[[], Optional[str]]] = None,
+    ):
+        self._access_token = access_token or ""
+        self._token_provider = token_provider
+        auth = Auth.Token(self._access_token) if self._access_token else None
+        super().__init__(auth=auth)
 
-        # Function to convert the flat list to a hierarchical structure
+    @property
+    def access_token(self) -> str:
+        """Expose the current token for tests and direct helper usage."""
+        return self._access_token
+
+    def refresh_token(self, access_token: Optional[str]) -> None:
+        """Update the cached token and refresh the underlying requester auth object."""
+        if not access_token:
+            return
+        self._access_token = access_token
+        requester = getattr(self, "_Github__requester", None)
+        if requester is not None:
+            requester._Requester__auth = Auth.Token(access_token)
+
+    def _ensure_fresh_token(self) -> None:
+        """Ask the token provider for a fresh token before making direct REST calls."""
+        if self._token_provider is None:
+            return
+        refreshed_token = self._token_provider()
+        if refreshed_token and refreshed_token != self._access_token:
+            self.refresh_token(refreshed_token)
+
+    def _build_session(self) -> requests.Session:
+        """Create a retry-enabled requests session for the direct REST helper methods."""
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+            backoff_factor=1,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session = requests.Session()
+        session.mount("https://", adapter)
+        return session
+
+    def _request_json(self, url: str, params: Optional[dict] = None):
+        """Perform an authenticated GET request and decode the JSON body."""
+        self._ensure_fresh_token()
+        session = self._build_session()
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "Authorization": f"token {self._access_token}",
+        }
+        try:
+            response = session.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            return response.json()
+        except HTTPError as http_err:
+            logger.error("HTTP error occurred: %s", http_err)
+        except RequestException as req_err:
+            logger.error("Request error occurred: %s", req_err)
+        except Exception as err:
+            logger.error("An error occurred: %s", err)
+        return None
+
+    def get_repo(self, full_name_or_id, lazy=False):
+        """Wrap `Github.get_repo` so token refresh also applies to PyGithub calls."""
+        self._ensure_fresh_token()
+        return super().get_repo(full_name_or_id, lazy=lazy)
+
+    def search_repositories(self, query, sort=None, order=None):
+        """Wrap repository search so refreshable credentials also apply to PyGithub calls."""
+        self._ensure_fresh_token()
+        kwargs = {"query": query}
+        if sort is not None:
+            kwargs["sort"] = sort
+        if order is not None:
+            kwargs["order"] = order
+        return super().search_repositories(**kwargs)
+
+    def get_repo_structure(self, repo_full_name, branch="main") -> Optional[dict]:
+        """Retrieve the full repository tree and convert it into a nested dictionary."""
+        owner, repo_name = repo_full_name.split("/")
+        url = f"https://api.github.com/repos/{owner}/{repo_name}/git/trees/{branch}?recursive=1"
+        tree_data = self._request_json(url)
+        if not tree_data or "tree" not in tree_data:
+            logger.error("Error fetching tree structure for %s", repo_full_name)
+            return None
+
         def list_to_tree(items):
-            """
-            Convert the flat list to a hierarchical structure with full paths.
-            Include size metadata for files and remove 'type' attributes.
-            """
             tree = {}
             for item in items:
-                path_parts = item['path'].split('/')
+                path_parts = item["path"].split("/")
                 current_level = tree
                 for part in path_parts[:-1]:
-                    # Ensure 'children' dictionary exists for directories without explicitly adding 'type'
-                    current_level = current_level.setdefault(
-                        part, {'children': {}})
-                    # Ensure we don't inadvertently create a 'type' key for directories
-                    current_level = current_level.get('children')
+                    current_level = current_level.setdefault(part, {"children": {}})
+                    current_level = current_level["children"]
 
-                # For the last part of the path, decide if it's a file or directory and add appropriate information
-                if item['type'] == 'blob':  # It's a file
+                if item["type"] == "blob":
                     current_level[path_parts[-1]] = {
-                        'path': item['path'],  # Include full path
-                        # Include size if available
-                        'size': item.get('size', 0)
+                        "path": item["path"],
+                        "size": item.get("size", 0),
                     }
-                else:  # It's a directory
-                    # Initialize the directory if not already present, without adding 'type'
-                    if path_parts[-1] not in current_level:
-                        current_level[path_parts[-1]] = {'children': {}}
+                else:
+                    current_level.setdefault(path_parts[-1], {"children": {}})
             return tree
 
-        # Directly use the Trees API to get the full directory structure of the "main" branch
-        tree_url = f'https://api.github.com/repos/{owner}/{repo_name}/git/trees/{branch}?recursive=1'
-        tree_response = requests.get(tree_url, headers=headers)
+        return list_to_tree(tree_data["tree"])
 
-        # Check if the request was successful
-        if tree_response.status_code == 200:
-            tree_data = tree_response.json()
-            # Convert the flat list of items to a hierarchical tree structure
-            repo_structure = list_to_tree(tree_data['tree'])
-            return repo_structure
-        else:
-            print(
-                f"Error fetching tree structure: {tree_response.status_code}")
-            print("Details:", tree_response.json())
+    def search_code(self, query: str, per_page: int = 30) -> list:
+        """Use the GitHub REST code-search endpoint and return the raw `items` list."""
+        url = "https://api.github.com/search/code"
+        data = self._request_json(url, params={"q": query, "per_page": per_page})
+        return data.get("items", []) if data else []
 
-    def search_code(self, query: str, per_page: int = 30) -> dict:
-        """
-        Search for code on GitHub using the GitHub API.
+    def search_issues(self, query: str, per_page: int = 30) -> list:
+        """Use the GitHub REST issue-search endpoint and return the raw `items` list."""
+        url = "https://api.github.com/search/issues"
+        data = self._request_json(url, params={"q": query, "per_page": per_page})
+        return data.get("items", []) if data else []
 
-        Parameters:
-        query (str): The search query.
-        per_page (int): The number of results per page.
-
-        Returns:
-        dict: The search result in dict format.
-        """
-        url = 'https://api.github.com/search/code'
-        headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.access_token}'
-        }
-        params = {
-            'q': query,
-            'per_page': per_page
-        }
-
-        # Retry strategy
-        retry_strategy = Retry(
-            total=3,  # Total number of retries
-            # Retry on these HTTP status codes
-            status_forcelist=[429, 500, 502, 503, 504],
-            # Retry on these HTTP methods
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1  # Exponential backoff factor
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        http = requests.Session()
-        http.mount("https://", adapter)
-
-        try:
-            response = http.get(url, headers=headers, params=params)
-            response.raise_for_status()  # Raise HTTPError for bad responses
-            return response.json().get('items', [])
-        except HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-        except RequestException as req_err:
-            logger.error(f"Request error occurred: {req_err}")
-        except Exception as err:
-            logger.error(f"An error occurred: {err}")
-
-    def search_issues(self, query: str, per_page: int = 30) -> dict:
-        """
-        Search for code on GitHub using the GitHub API.
-
-        Parameters:
-        query (str): The search query.
-        per_page (int): The number of results per page.
-
-        Returns:
-        dict: The search result in dict format.
-        """
-        url = 'https://api.github.com/search/issues'
-        headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.access_token}'
-        }
-        params = {
-            'q': query,
-            'per_page': per_page
-        }
-
-        # Retry strategy
-        retry_strategy = Retry(
-            total=3,  # Total number of retries
-            # Retry on these HTTP status codes
-            status_forcelist=[429, 500, 502, 503, 504],
-            # Retry on these HTTP methods
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1  # Exponential backoff factor
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        http = requests.Session()
-        http.mount("https://", adapter)
-
-        try:
-            response = http.get(url, headers=headers, params=params)
-            response.raise_for_status()  # Raise HTTPError for bad responses
-            return response.json().get('items', [])
-        except HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-        except RequestException as req_err:
-            logger.error(f"Request error occurred: {req_err}")
-        except Exception as err:
-            logger.error(f"An error occurred: {err}")
-
-    def get_issue_comments(self, repo_full_name: str, issue_number: int) -> dict:
-        """
-        Get comments of an issue on GitHub using the GitHub API.
-
-        Parameters:
-        repo_full_name (str): The full name of the repository (e.g., 'octocat/Hello-World').
-        issue_number (int): The issue number.
-
-        Returns:
-        dict: The comments of the issue in dict format.
-        """
-        url = f'https://api.github.com/repos/{repo_full_name}/issues/{issue_number}/comments'
-        headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.access_token}'
-        }
-        # Retry strategy
-        retry_strategy = Retry(
-            total=3,  # Total number of retries
-            # Retry on these HTTP status codes
-            status_forcelist=[429, 500, 502, 503, 504],
-            # Retry on these HTTP methods
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1  # Exponential backoff factor
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        http = requests.Session()
-        http.mount("https://", adapter)
-
-        try:
-            response = http.get(url, headers=headers)
-            response.raise_for_status()  # Raise HTTPError for bad responses
-            return response.json()
-        except HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-        except RequestException as req_err:
-            logger.error(f"Request error occurred: {req_err}")
-        except Exception as err:
-            logger.error(f"An error occurred: {err}")
+    def get_issue_comments(self, repo_full_name: str, issue_number: int) -> list:
+        """Fetch issue comments through the direct REST helper path."""
+        url = f"https://api.github.com/repos/{repo_full_name}/issues/{issue_number}/comments"
+        data = self._request_json(url)
+        return data if isinstance(data, list) else []
 
     def get_pr_files(self, repo_full_name: str, pr_number: int) -> list:
-        """
-        Get the files of a pull request on GitHub using the GitHub API.
-
-        Parameters:
-        repo_full_name (str): The full name of the repository (e.g., 'octocat/Hello-World').
-        pr_number (int): The pull request number.
-
-        Returns:
-        list: The files of the pull request in list format.
-        """
-        url = f'https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/files'
-        headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.access_token}'
-        }
-
-        # Retry strategy
-        retry_strategy = Retry(
-            total=3,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        http = requests.Session()
-        http.mount("https://", adapter)
-
-        try:
-            response = http.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-        except RequestException as req_err:
-            logger.error(f"Request error occurred: {req_err}")
-        except Exception as err:
-            logger.error(f"An error occurred: {err}")
-        return []
+        """Fetch pull-request changed files through the direct REST helper path."""
+        url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pr_number}/files"
+        data = self._request_json(url)
+        return data if isinstance(data, list) else []
 
     def get_pr_comments(self, repo_full_name: str, pr_number: int) -> list:
-        """
-        Get the comments of a pull request on GitHub using the GitHub API.
-
-        Parameters:
-        repo_full_name (str): The full name of the repository (e.g., 'octocat/Hello-World').
-        pr_number (int): The pull request number.
-
-        Returns:
-        list: The comments of the pull request in list format.
-        """
-        url = f'https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments'
-        headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.access_token}'
-        }
-
-        # Retry strategy
-        retry_strategy = Retry(
-            total=3,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        http = requests.Session()
-        http.mount("https://", adapter)
-
-        try:
-            response = http.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
-        except HTTPError as http_err:
-            logger.error(f"HTTP error occurred: {http_err}")
-        except RequestException as req_err:
-            logger.error(f"Request error occurred: {req_err}")
-        except Exception as err:
-            logger.error(f"An error occurred: {err}")
-        return []
-
-# Example usage:
-if __name__ == "__main__":
-    auth_manager = GitHubAuthManager()
-
-    # For developers using a personal access token or an OAuth token
-    github_instance = auth_manager.authenticate_with_token(
-        "your_personal_access_token_or_oauth_token_here")
-
-    # For organizational or enterprise environments using GitHub App
-    # github_instance = auth_manager.authenticate_with_app("app_id", "private_key", "installation_id")
-
-    # Example action: List all repositories for the authenticated user
-    if github_instance:
-        for repo in github_instance.get_user().get_repos():
-            print(repo.name)
-
-    # Close the connection when done
-    auth_manager.close_connection()
+        """Fetch pull-request issue-thread comments through the direct REST helper path."""
+        url = f"https://api.github.com/repos/{repo_full_name}/issues/{pr_number}/comments"
+        data = self._request_json(url)
+        return data if isinstance(data, list) else []

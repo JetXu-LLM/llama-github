@@ -170,6 +170,7 @@ class DataAnonymizer:
             'port': r'(?i)(port)\s*[:=]\s*([0-9]{2,})',
         }
 
+    @staticmethod
     def hash_replacement(match):
         sensitive_data = match.group(0)
         hash_object = hashlib.sha256(sensitive_data.encode())
@@ -179,7 +180,7 @@ class DataAnonymizer:
 
     def anonymize_sensitive_data(self, question):
         anonymized_question = question
-        for pattern_name, pattern in self.patterns.items():
+        for pattern in self.patterns.values():
             anonymized_question = re.sub(
                 pattern, self.hash_replacement, anonymized_question)
         return anonymized_question
@@ -216,7 +217,10 @@ class AsyncHTTPClient:
                         method, url, headers=headers, json=data
                     ) as response:
                         if response.status == 200:
-                            return await response.json()
+                            try:
+                                return await response.json()
+                            except aiohttp.ContentTypeError:
+                                return {"text": await response.text()}
                         else:
                             logger.error(
                                 f"Request failed with status code: {response.status}. "
@@ -289,14 +293,19 @@ class CodeAnalyzer:
                 for alias in node.names:
                     CodeAnalyzer._categorize_import(alias.name, import_info)
             elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    from_import = {
-                        "module": node.module,
-                        "names": [n.name for n in node.names],
-                        "level": node.level
-                    }
-                    import_info["from_imports"].append(from_import)
-                    CodeAnalyzer._categorize_import(node.module, import_info)
+                module_name = node.module
+                from_import = {
+                    "module": module_name,
+                    "names": [n.name for n in node.names],
+                    "level": node.level
+                }
+                import_info["from_imports"].append(from_import)
+                if module_name:
+                    CodeAnalyzer._categorize_import(module_name, import_info)
+                elif node.level > 0:
+                    import_info["local_imports"].extend(
+                        alias.name for alias in node.names
+                    )
 
         return import_info
 
@@ -325,28 +334,11 @@ class CodeAnalyzer:
         :return: List of standard library module names.
         """
         import sys
-        import pkgutil
-        
-        std_lib = []
-        for module in pkgutil.iter_modules():
-            if module.name not in sys.builtin_module_names:
-                try:
-                    spec = pkgutil.find_loader(module.name)
-                    if spec is not None:
-                        if hasattr(spec, 'get_filename'):
-                            pathname = spec.get_filename()
-                        elif hasattr(spec, 'origin'):
-                            pathname = spec.origin
-                        else:
-                            pathname = None
-                        
-                        if pathname and 'site-packages' not in pathname:
-                            std_lib.append(module.name)
-                except Exception as e:
-                    logger.warning(f"Error processing module {module.name}: {e}")
-                    continue
-        
-        return std_lib + list(sys.builtin_module_names)
+
+        if hasattr(sys, "stdlib_module_names"):
+            return sorted(sys.stdlib_module_names)
+
+        return list(sys.builtin_module_names)
 
     @staticmethod
     def analyze_imports(code_str: str) -> Tuple[Dict[str, Any], str]:

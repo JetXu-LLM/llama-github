@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llama-github"
+dynamic = ["version"]
+description = "GitHub retrieval and context generation utilities for coding assistants and AI developer workflows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+  { name = "Jet Xu", email = "Voldemort.xu@foxmail.com" }
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "PyGithub>=2.4,<3",
+  "aiohttp>=3.9,<4",
+  "ipython>=8,<9",
+  "langchain-core>=0.3.30,<0.4",
+  "langchain-mistralai>=0.2,<0.3",
+  "langchain-openai>=0.3.0,<0.4",
+  "langchain-text-splitters>=0.3.0,<0.4",
+  "nest-asyncio>=1.6,<2",
+  "numpy>=1.24,<3",
+  "pydantic>=2.10,<3",
+  "python-dateutil>=2.9,<3",
+  "requests>=2.31,<3",
+  "tokenizers>=0.20,<1",
+  "transformers>=4.47,<6",
+  "urllib3>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/JetXu-LLM/llama-github"
+Repository = "https://github.com/JetXu-LLM/llama-github"
+Issues = "https://github.com/JetXu-LLM/llama-github/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["llama_github", "llama_github.*"]
+
+[tool.setuptools.package-data]
+llama_github = ["config/config.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "llama_github.version.__version__" }

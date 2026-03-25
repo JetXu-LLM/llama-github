@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-25
+
+### Changed
+- Modernized packaging to `pyproject.toml` and raised the runtime floor to Python 3.10+
+- Reworked LLM and GitHub integration layers to reduce stale compatibility paths and deprecated APIs
+- Updated repository retrieval docs to reflect the actual return shapes and maintenance-focused project positioning
+
+### Fixed
+- Corrected `simple_mode` behavior so it no longer depends on embedding and reranker initialization
+- Fixed message composition order for chat history vs context handling
+- Stabilized test execution and added runnable mock/real examples
+
 ## [0.3.3] - 2025-08-24
 
 ### Optimized

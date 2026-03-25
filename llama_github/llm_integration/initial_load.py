@@ -1,179 +1,211 @@
-# initial_load.py
-from typing import Optional, Any
-from threading import Lock
+from __future__ import annotations
+
+import platform
+import subprocess
+import sys
+from typing import Any, Optional
 
 from llama_github.config.config import config
 from llama_github.logger import logger
 
+
 class LLMManager:
     """
-    Singleton class for managing Language Models and related components.
-    This class handles initialization and access to various models including LLMs,
-    embedding models, and reranking models.
+    Lazily manages chat models, embeddings, rerankers, and tokenizers.
+
+    The manager is instance-scoped so different GithubRAG instances can safely
+    carry different credentials or model choices in the same process.
     """
-    _instance_lock = Lock()
-    _instance = None
-    llm = None
-    rerank_model = None
-    _initialized = False
-    llm_simple = None
-    tokenizer = None
-    embedding_model = None
 
-    def __new__(cls, *args, **kwargs):
+    def __init__(
+        self,
+        openai_api_key: Optional[str] = None,
+        mistral_api_key: Optional[str] = None,
+        huggingface_token: Optional[str] = None,
+        open_source_models_hg_dir: Optional[str] = None,
+        embedding_model: Optional[str] = config.get("default_embedding"),
+        rerank_model: Optional[str] = config.get("default_reranker"),
+        llm: Any = None,
+        simple_mode: bool = False,
+    ):
         """
-        Ensure only one instance of LLMManager is created (Singleton pattern).
-        """
-        if cls._instance is None:  # First check (unlocked)
-            with cls._instance_lock:  # Acquire lock
-                if cls._instance is None:  # Second check (locked)
-                    cls._instance = super(LLMManager, cls).__new__(cls)
-        return cls._instance
+        Initialize an instance-scoped model manager.
 
-    def __init__(self,
-                 openai_api_key: Optional[str] = None,
-                 mistral_api_key: Optional[str] = None,
-                 huggingface_token: Optional[str] = None,
-                 open_source_models_hg_dir: Optional[str] = None,
-                 embedding_model: Optional[str] = config.get(
-                     "default_embedding"),
-                 rerank_model: Optional[str] = config.get("default_reranker"),
-                 llm: Any = None,
-                 simple_mode: bool = False):
+        The manager loads chat models lazily and only loads embedding / reranker
+        models on demand when professional-mode ranking requires them.
         """
-        Initialize the LLMManager with specified models and API keys.
-
-        Args:
-            openai_api_key (Optional[str]): API key for OpenAI.
-            mistral_api_key (Optional[str]): API key for Mistral AI.
-            huggingface_token (Optional[str]): Token for Hugging Face.
-            open_source_models_hg_dir (Optional[str]): Directory for open-source models.
-            embedding_model (Optional[str]): Name or path of the embedding model.
-            rerank_model (Optional[str]): Name or path of the reranking model.
-            llm (Any): Custom LLM instance if provided.
-            simple_mode (bool): If True, skip initialization of embedding and reranking models.
-        """
-        with self._instance_lock:   # Prevent re-initialization
-            if self._initialized:
-                return
-            self._initialized = True
-
+        self.openai_api_key = openai_api_key
+        self.mistral_api_key = mistral_api_key
+        self.huggingface_token = huggingface_token
+        self.open_source_models_hg_dir = open_source_models_hg_dir
+        self.embedding_model_name = embedding_model or config.get("default_embedding")
+        self.rerank_model_name = rerank_model or config.get("default_reranker")
         self.simple_mode = simple_mode
 
-        # Initialize LLM based on provided API keys or custom LLM
+        self.llm = llm
+        self.llm_simple = llm
+        self.tokenizer = None
+        self.embedding_model = None
+        self.rerank_model = None
+        self._provider_warning_emitted = False
+
         if llm is not None:
-            self.llm = llm
-            self.model_type = "Custom_langchain_llm"
-        elif mistral_api_key is not None and mistral_api_key != "" and self.llm is None:
-            logger.info("Initializing Codestral API...")
-            from langchain_mistralai.chat_models import ChatMistralAI
-            self.llm = ChatMistralAI(mistral_api_key=mistral_api_key, model="mistral-medium-latest", temperature=0.3)
-            self.llm_simple = ChatMistralAI(
-                mistral_api_key=mistral_api_key,
-                model="devstral-small-latest",
-                temperature=0.2
-            )
+            self.model_type = "Custom"
+        elif mistral_api_key:
+            self.model_type = "Mistral"
+        elif openai_api_key:
             self.model_type = "OpenAI"
-        elif openai_api_key is not None and openai_api_key != "" and self.llm is None:
-            from langchain_openai import ChatOpenAI
-            logger.info("Initializing OpenAI API...")
-            self.llm = ChatOpenAI(api_key=openai_api_key, model="gpt-4-turbo")
-            self.llm_simple = ChatOpenAI(
-                api_key=openai_api_key, model="gpt-4o-mini")
-            self.model_type = "OpenAI"
-        # Initialize for Open Source Models
-        elif open_source_models_hg_dir is not None and open_source_models_hg_dir != "" and self.llm is None:
-            logger.info(f"Initializing {open_source_models_hg_dir}...")
-            # load huggingface models
-            self.model_type = "Hubgingface"
-        elif self.llm is None:
-            # default model is phi3_mini_128k
-            self.model_type = "Hubgingface"
-            
-        if not self.simple_mode:
-            import sys
-            import platform
-            import subprocess
-
-            def get_device():
-                if sys.platform.startswith('darwin'):  # macOS
-                    # Check for Apple Silicon (M1/M2)
-                    if platform.machine() == 'arm64':
-                        return 'mps'
-                elif sys.platform.startswith('linux') or sys.platform.startswith('win'):
-                    # Check for NVIDIA GPU
-                    try:
-                        subprocess.run(['nvidia-smi'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        return 'cuda'
-                    except (subprocess.CalledProcessError, FileNotFoundError):
-                        pass
-                
-                # Default to CPU
-                return 'cpu'
-
-            # Usage
-            self.device = get_device()
-
-            from transformers import AutoModel
-            from transformers import AutoModelForSequenceClassification
-            from transformers import AutoTokenizer
-            # Initialize embedding model
-            if self.tokenizer is None:
-                logger.info(f"Initializing {embedding_model}...")
-                self.tokenizer = AutoTokenizer.from_pretrained(embedding_model)
-                self.embedding_model = AutoModel.from_pretrained(
-                    embedding_model, trust_remote_code=True).to(self.device)
-
-            # Initialize reranking model
-            if self.rerank_model is None:
-                logger.info(f"Initializing {rerank_model}...")
-                self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
-                    rerank_model, num_labels=1, trust_remote_code=True
-                ).to(self.device)
+        elif open_source_models_hg_dir:
+            self.model_type = "ReservedOpenSource"
         else:
-            logger.info("Simple mode enabled. Skipping embedding and rerank model initialization.")
+            self.model_type = "Unavailable"
+
+        if self.simple_mode:
+            logger.info(
+                "Simple mode enabled. Embedding and rerank models will load only if explicitly requested."
+            )
+
+    def _warn_unsupported_open_source_mode(self) -> None:
+        """Emit the open-source placeholder warning at most once per manager instance."""
+        if self.model_type == "ReservedOpenSource" and not self._provider_warning_emitted:
+            logger.warning(
+                "open_source_models_hg_dir is reserved for future native provider support. "
+                "Use a custom compatible chat model via the llm argument for now."
+            )
+            self._provider_warning_emitted = True
+
+    def _load_openai_models(self) -> None:
+        """Instantiate the default OpenAI chat models."""
+        if self.llm is not None:
+            return
+
+        from langchain_openai import ChatOpenAI
+
+        logger.info("Initializing OpenAI chat models...")
+        self.llm = ChatOpenAI(
+            api_key=self.openai_api_key,
+            model=config.get("default_openai_model"),
+        )
+        self.llm_simple = ChatOpenAI(
+            api_key=self.openai_api_key,
+            model=config.get("default_openai_simple_model"),
+        )
+
+    def _load_mistral_models(self) -> None:
+        """Instantiate the default Mistral chat models."""
+        if self.llm is not None:
+            return
+
+        from langchain_mistralai.chat_models import ChatMistralAI
+
+        logger.info("Initializing Mistral chat models...")
+        self.llm = ChatMistralAI(
+            mistral_api_key=self.mistral_api_key,
+            model=config.get("default_mistral_model"),
+            temperature=0.2,
+        )
+        self.llm_simple = ChatMistralAI(
+            mistral_api_key=self.mistral_api_key,
+            model=config.get("default_mistral_simple_model"),
+            temperature=0.1,
+        )
+
+    def _ensure_chat_models_loaded(self) -> None:
+        """Load chat models lazily based on the configured provider choice."""
+        if self.llm is not None:
+            return
+
+        if self.model_type == "Mistral":
+            self._load_mistral_models()
+        elif self.model_type == "OpenAI":
+            self._load_openai_models()
+        elif self.model_type == "ReservedOpenSource":
+            self._warn_unsupported_open_source_mode()
+
+    def _get_device(self) -> str:
+        """Pick the preferred inference device for local embedding and reranker models."""
+        if sys.platform.startswith("darwin") and platform.machine() == "arm64":
+            return "mps"
+
+        if sys.platform.startswith(("linux", "win")):
+            try:
+                subprocess.run(
+                    ["nvidia-smi"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return "cuda"
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
+
+        return "cpu"
+
+    def _ensure_tokenizer_loaded(self) -> None:
+        """Load the tokenizer used for chunk sizing and professional-mode query token counting."""
+        if self.tokenizer is not None:
+            return
+
+        from transformers import AutoTokenizer
+
+        logger.info("Initializing tokenizer %s...", self.embedding_model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.embedding_model_name)
+
+    def _ensure_embedding_model_loaded(self) -> None:
+        """Load the embedding model lazily when semantic ranking is needed."""
+        if self.embedding_model is not None:
+            return
+
+        from transformers import AutoModel
+
+        self._ensure_tokenizer_loaded()
+        logger.info("Initializing embedding model %s...", self.embedding_model_name)
+        self.embedding_model = AutoModel.from_pretrained(
+            self.embedding_model_name,
+            trust_remote_code=True,
+        ).to(self._get_device())
+
+    def _ensure_rerank_model_loaded(self) -> None:
+        """Load the reranker model lazily when professional-mode ranking is needed."""
+        if self.rerank_model is not None:
+            return
+
+        from transformers import AutoModelForSequenceClassification
+
+        logger.info("Initializing reranker %s...", self.rerank_model_name)
+        self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
+            self.rerank_model_name,
+            num_labels=1,
+            trust_remote_code=True,
+        ).to(self._get_device())
 
     def get_llm(self):
-        """
-        Get the main Language Model.
-
-        Returns:
-            The initialized Language Model.
-        """
+        """Return the main chat model, loading it if necessary."""
+        self._ensure_chat_models_loaded()
         return self.llm
 
     def get_llm_simple(self):
-        """
-        Get the simplified Language Model.
-
-        Returns:
-            The initialized simplified Language Model.
-        """
+        """Return the lightweight chat model, loading it if necessary."""
+        self._ensure_chat_models_loaded()
         return self.llm_simple
 
     def get_tokenizer(self):
-        """
-        Get the tokenizer for the embedding model.
-
-        Returns:
-            The initialized tokenizer.
-        """
+        """Return the tokenizer used in professional mode, or `None` in simple mode."""
+        if self.simple_mode:
+            return None
+        self._ensure_tokenizer_loaded()
         return self.tokenizer
 
     def get_rerank_model(self):
-        """
-        Get the reranking model.
-
-        Returns:
-            The initialized reranking model.
-        """
+        """Return the reranker model in professional mode, or `None` in simple mode."""
+        if self.simple_mode:
+            return None
+        self._ensure_rerank_model_loaded()
         return self.rerank_model
 
     def get_embedding_model(self):
-        """
-        Get the embedding model.
-
-        Returns:
-            The initialized embedding model.
-        """
+        """Return the embedding model in professional mode, or `None` in simple mode."""
+        if self.simple_mode:
+            return None
+        self._ensure_embedding_model_loaded()
         return self.embedding_model
