@@ -85,7 +85,7 @@ class RAGProcessor:
                 response.issue_search_logic,
             ]
         except Exception as exc:
-            logger.error("Error in analyzing question: %s", exc)
+            logger.error("Question analysis failed error_type=%s", type(exc).__name__)
             return [query, "", "", ""]
 
     class _GitHubCodeSearchCriteria(BaseModel):
@@ -101,7 +101,9 @@ class RAGProcessor:
     ) -> List[str]:
         """Generate GitHub code-search queries from the user question and optional draft answer."""
         try:
-            logger.debug("Generating code search criteria for question: %s", query)
+            logger.debug(
+                "Generating code search criteria query_length=%s", len(query or "")
+            )
             prompt = config.get("code_search_criteria_prompt")
             response = await self.llm_handler.ainvoke(
                 human_question=query,
@@ -110,13 +112,15 @@ class RAGProcessor:
                 output_structure=self._GitHubCodeSearchCriteria,
             )
             logger.debug(
-                "For %s, the search criterias for code search is: %s",
-                query,
-                response.search_criteria,
+                "Generated code search criteria count=%s",
+                len(response.search_criteria),
             )
             return response.search_criteria
         except Exception as exc:
-            logger.error("Error in get_code_search_criteria: %s", exc)
+            logger.error(
+                "Code search criteria generation failed error_type=%s",
+                type(exc).__name__,
+            )
             return []
 
     class _GitHubRepoSearchCriteria(BaseModel):
@@ -137,7 +141,10 @@ class RAGProcessor:
         """Generate GitHub repository-search queries and apply the returned necessity score."""
         search_criteria: List[str] = []
         try:
-            logger.debug("Generating repo search criteria for question: %s", query)
+            logger.debug(
+                "Generating repository search criteria query_length=%s",
+                len(query or ""),
+            )
             prompt = config.get("repo_search_criteria_prompt")
             response = await self.llm_handler.ainvoke(
                 human_question=query,
@@ -150,13 +157,15 @@ class RAGProcessor:
             elif response.necessity_score >= 60 and response.search_criteria:
                 search_criteria = response.search_criteria[:1]
             logger.debug(
-                "For %s, repo search criteria is %s and necessity score is %s",
-                query,
-                search_criteria,
+                "Generated repository search criteria count=%s necessity_score=%s",
+                len(search_criteria),
                 response.necessity_score,
             )
         except Exception as exc:
-            logger.error("Error in get_repo_search_criteria: %s", exc)
+            logger.error(
+                "Repository search criteria generation failed error_type=%s",
+                type(exc).__name__,
+            )
         return search_criteria
 
     def get_repo_simple_structure(self, repo: Repository) -> str:
@@ -195,7 +204,9 @@ class RAGProcessor:
     ) -> List[str]:
         """Generate GitHub issue-search queries from the question and optional draft answer."""
         try:
-            logger.debug("Generating issue search criteria for question: %s", query)
+            logger.debug(
+                "Generating issue search criteria query_length=%s", len(query or "")
+            )
             prompt = config.get("issue_search_criteria_prompt")
             response = await self.llm_handler.ainvoke(
                 human_question=query,
@@ -204,13 +215,15 @@ class RAGProcessor:
                 output_structure=self._GitHubIssueSearchCriteria,
             )
             logger.debug(
-                "For %s, issue search criteria is: %s",
-                query,
-                response.search_criteria,
+                "Generated issue search criteria count=%s",
+                len(response.search_criteria),
             )
             return response.search_criteria
         except Exception as exc:
-            logger.error("Error in get_issue_search_criteria: %s", exc)
+            logger.error(
+                "Issue search criteria generation failed error_type=%s",
+                type(exc).__name__,
+            )
             return []
 
     def _arrange_code_search_result(
@@ -477,7 +490,7 @@ class RAGProcessor:
             combined.sort(key=lambda item: item[1], reverse=True)
             return [context for context, _ in combined[:top_n]]
         except Exception as exc:
-            logger.error("Error retrieving top n context: %s", exc)
+            logger.error("Context ranking failed error_type=%s", type(exc).__name__)
             return self._fallback_rank_contexts(context_list, query, top_n)
 
     class _ContextRelevanceScore(BaseModel):
@@ -500,11 +513,14 @@ class RAGProcessor:
                 simple_llm=True,
             )
             logger.debug(
-                "For %s, the context relevance score is: %s",
-                context[:20],
+                "Context relevance scoring completed context_length=%s score=%s",
+                len(context or ""),
                 response.score,
             )
             return response.score
         except Exception as exc:
-            logger.error("Error in get_context_relevance_score: %s", exc)
+            logger.error(
+                "Context relevance scoring failed error_type=%s",
+                type(exc).__name__,
+            )
             return 1

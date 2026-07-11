@@ -22,6 +22,10 @@ Supported chat model strategies:
 - `mistral_api_key=...`
 - `llm=your_langchain_compatible_chat_model`
 
+For request-scoped or serverless usage, pass `repo_cleanup_enabled=False`. For a
+long-lived process, call `github_rag.close()` during shutdown or use `GithubRAG` as a
+context manager.
+
 ## Context Retrieval
 
 ```python
@@ -90,9 +94,31 @@ asyncio.run(main())
 repo = github_rag.RepositoryPool.get_repository("JetXu-LLM/llama-github")
 pr_content = repo.get_pr_content(number=15)
 print(pr_content["pr_metadata"]["title"])
+print(pr_content["pr_metadata"]["head_sha"])
+print(pr_content["_retrieval_meta"]["pr_files"])
 ```
 
-This method is useful when you want structured PR metadata, changed files, interactions, and related issue context in one object.
+This method is useful when you want structured PR metadata, changed files,
+interactions, and related issue context in one object. Related issues come only from
+the PR title/body and top-level PR comments. Review summaries and inline review
+comments remain separate interaction records, so callers do not lose multiple inline
+comments attached to one review.
+
+`_retrieval_meta` records bounded-fetch outcomes. A `partial` or `error` result is an
+unknown, not evidence that a file, comment, or match does not exist.
+
+To refresh CI evidence later without refetching the whole pull request:
+
+```python
+ci_snapshot = repo.get_ci_status_with_status(pr_content["pr_metadata"]["head_sha"])
+print(ci_snapshot.outcome.value)
+print(ci_snapshot.to_dict())
+```
+
+This helper is pinned to the supplied head SHA and keeps commit statuses and check runs
+independently typed. Status history is reduced to the newest result per GitHub context,
+while retrieval metadata retains both fetched and current item counts. Its aggregate
+outcome is retrieval metadata, not a merge verdict.
 
 ## Logging
 
@@ -104,3 +130,7 @@ from llama_github import configure_logging
 
 configure_logging(level=logging.INFO)
 ```
+
+Library logs contain operation names, counts, lengths, status codes, and error types.
+They intentionally omit raw queries, retrieved contexts, response bodies, and private
+source content.

@@ -1,17 +1,64 @@
 from github import GithubException
 from threading import Lock, Event, Thread
 from datetime import datetime, timezone
+from dataclasses import dataclass, field
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 from llama_github.logger import logger
-from llama_github.github_integration.github_auth_manager import ExtendedGithub
-import time
+from llama_github.github_integration.github_auth_manager import (
+    ExtendedGithub,
+    RetrievalOutcome,
+    RetrievalResult,
+)
 import re
 from dateutil import parser
 import base64
 import requests
 
+from llama_github.config.config import config
 from llama_github.utils import DiffGenerator, CodeAnalyzer
+
+__all__ = ["CIStatusSnapshot", "Repository", "RepositoryPool"]
+
+
+DEFAULT_RELATED_ISSUE_MAX_HITS = 20
+
+
+@dataclass(frozen=True)
+class CIStatusSnapshot:
+    """Current-head CI evidence plus typed retrieval-completeness metadata."""
+
+    head_sha: str
+    statuses: list[dict] = field(default_factory=list)
+    check_runs: list[dict] = field(default_factory=list)
+    outcome: RetrievalOutcome = RetrievalOutcome.NO_HIT
+    statuses_meta: dict = field(default_factory=dict)
+    check_runs_meta: dict = field(default_factory=dict)
+    state: Optional[str] = None
+
+    @property
+    def retrieval_meta(self) -> dict:
+        """Return JSON-safe per-source and aggregate completeness metadata."""
+        statuses_meta = dict(self.statuses_meta)
+        check_runs_meta = dict(self.check_runs_meta)
+        statuses_meta["current_item_count"] = len(self.statuses)
+        check_runs_meta["current_item_count"] = len(self.check_runs)
+        return {
+            "ci_aggregate": {"outcome": self.outcome.value},
+            "ci_statuses": statuses_meta,
+            "ci_check_runs": check_runs_meta,
+        }
+
+    def to_dict(self) -> dict:
+        """Return the stable JSON-safe shape consumed by retrieval clients."""
+        return {
+            "head_sha": self.head_sha,
+            "state": self.state,
+            "statuses": list(self.statuses),
+            "check_runs": list(self.check_runs),
+            "_retrieval_meta": self.retrieval_meta,
+        }
+
 
 class Repository:
     def __init__(self, full_name, github_instance: ExtendedGithub, **kwargs):
@@ -70,6 +117,212 @@ class Repository:
         self._issues = {}  # Singleton pattern for file contents
         self._readme = None  # Singleton pattern for README content
         self._prs = {}  # Singleton pattern for PR content
+        self._retrieval_meta = {}
+
+    def _bounded_retrieval(
+        self,
+        status_method: str,
+        legacy_method: str,
+        **kwargs,
+    ) -> RetrievalResult:
+        """Call a status-aware client method while retaining old client compatibility."""
+        method = getattr(self._github, status_method, None)
+        if callable(method):
+            result = method(**kwargs)
+            if isinstance(result, RetrievalResult):
+                return result
+
+        items = getattr(self._github, legacy_method)(**kwargs)
+        items = items if isinstance(items, list) else list(items or [])
+        return RetrievalResult(
+            items=items,
+            outcome=RetrievalOutcome.OK if items else RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+        )
+
+    @staticmethod
+    def _bounded_iterable(iterable, max_items: int) -> tuple[list, bool]:
+        """Consume at most ``max_items + 1`` values so truncation stays observable."""
+        if max_items <= 0:
+            raise ValueError("max_items must be positive")
+        values = []
+        iterator = iter(iterable)
+        for _ in range(max_items + 1):
+            try:
+                values.append(next(iterator))
+            except StopIteration:
+                break
+        return values[:max_items], len(values) > max_items
+
+    @staticmethod
+    def _bounded_github_call(
+        fetch: Callable[[], Any],
+        max_items: int,
+    ) -> RetrievalResult:
+        """Preserve items already fetched when a paginated PyGithub call fails."""
+        if max_items <= 0:
+            raise ValueError("max_items must be positive")
+
+        values = []
+        try:
+            iterator = iter(fetch())
+            for _ in range(max_items + 1):
+                try:
+                    values.append(next(iterator))
+                except StopIteration:
+                    break
+        except Exception as exc:
+            retained = values[:max_items]
+            return RetrievalResult(
+                items=retained,
+                outcome=(
+                    RetrievalOutcome.PARTIAL
+                    if retained
+                    else RetrievalOutcome.ERROR
+                ),
+                truncated=bool(retained),
+                status_code=getattr(exc, "status", None),
+                error_type=type(exc).__name__,
+            )
+
+        truncated = len(values) > max_items
+        retained = values[:max_items]
+        return RetrievalResult(
+            items=retained,
+            outcome=(
+                RetrievalOutcome.PARTIAL
+                if truncated
+                else (RetrievalOutcome.OK if retained else RetrievalOutcome.NO_HIT)
+            ),
+            truncated=truncated,
+        )
+
+    @staticmethod
+    def _aggregate_retrieval_outcome(
+        statuses_result: RetrievalResult,
+        check_runs_result: RetrievalResult,
+    ) -> RetrievalOutcome:
+        """Aggregate fetch completeness without making a merge-readiness judgment."""
+        outcomes = {statuses_result.outcome, check_runs_result.outcome}
+        if outcomes == {RetrievalOutcome.ERROR}:
+            return RetrievalOutcome.ERROR
+        if RetrievalOutcome.ERROR in outcomes or RetrievalOutcome.PARTIAL in outcomes:
+            return RetrievalOutcome.PARTIAL
+        if RetrievalOutcome.OK in outcomes:
+            return RetrievalOutcome.OK
+        return RetrievalOutcome.NO_HIT
+
+    def get_ci_status_with_status(
+        self,
+        head_sha: str,
+        *,
+        max_statuses: int = 100,
+        max_check_runs: int = 100,
+    ) -> CIStatusSnapshot:
+        """Fetch bounded, independently typed CI evidence for one exact head SHA."""
+        normalized_head_sha = str(head_sha or "").strip()
+        if not normalized_head_sha:
+            raise ValueError("head_sha is required")
+        if max_statuses <= 0 or max_check_runs <= 0:
+            raise ValueError("CI retrieval limits must be positive")
+
+        try:
+            repo = self.repo
+            if repo is None:
+                raise RuntimeError("Repository is unavailable")
+            head_commit = repo.get_commit(sha=normalized_head_sha)
+        except Exception as exc:
+            failure = RetrievalResult(
+                outcome=RetrievalOutcome.ERROR,
+                status_code=getattr(exc, "status", None),
+                error_type=type(exc).__name__,
+            )
+            logger.error(
+                "CI head-commit retrieval failed error_type=%s",
+                type(exc).__name__,
+            )
+            return CIStatusSnapshot(
+                head_sha=normalized_head_sha,
+                outcome=RetrievalOutcome.ERROR,
+                statuses_meta=failure.to_meta(),
+                check_runs_meta=failure.to_meta(),
+            )
+
+        statuses_result = self._bounded_github_call(
+            head_commit.get_statuses,
+            max_statuses,
+        )
+        check_runs_result = self._bounded_github_call(
+            head_commit.get_check_runs,
+            max_check_runs,
+        )
+        statuses = [
+            {
+                "context": status.context,
+                "state": status.state,
+                "description": status.description,
+                "target_url": status.target_url,
+                "created_at": self.to_isoformat(status.created_at),
+                "updated_at": self.to_isoformat(status.updated_at),
+            }
+            for status in statuses_result.items
+        ]
+        # Commit statuses are an append-only stream keyed by ``context``.
+        # Keep only the newest state for each logical context so a completed
+        # rerun cannot be shadowed by an obsolete failure with another URL.
+        current_statuses: dict[str, dict] = {}
+        for status in statuses:
+            context = str(status.get("context") or "unknown")
+            existing = current_statuses.get(context)
+            if existing is None or str(status.get("updated_at") or "") >= str(
+                existing.get("updated_at") or ""
+            ):
+                current_statuses[context] = status
+        statuses = list(current_statuses.values())
+        check_runs = [
+            {
+                "name": check_run.name,
+                "status": check_run.status,
+                "conclusion": check_run.conclusion,
+                "started_at": (
+                    self.to_isoformat(check_run.started_at)
+                    if check_run.started_at
+                    else None
+                ),
+                "completed_at": (
+                    self.to_isoformat(check_run.completed_at)
+                    if check_run.completed_at
+                    else None
+                ),
+                "details_url": check_run.html_url,
+            }
+            for check_run in check_runs_result.items
+        ]
+        status_states = {
+            str(status.get("state") or "").strip().lower()
+            for status in statuses
+        }
+        if status_states.intersection({"failure", "error"}):
+            combined_status_state = "failure"
+        elif "pending" in status_states:
+            combined_status_state = "pending"
+        elif status_states and status_states <= {"success"}:
+            combined_status_state = "success"
+        else:
+            combined_status_state = None
+        return CIStatusSnapshot(
+            head_sha=normalized_head_sha,
+            statuses=statuses,
+            check_runs=check_runs,
+            outcome=self._aggregate_retrieval_outcome(
+                statuses_result,
+                check_runs_result,
+            ),
+            statuses_meta=statuses_result.to_meta(),
+            check_runs_meta=check_runs_result.to_meta(),
+            # Kept for the historical PR-content shape; it is not a merge verdict.
+            state=combined_status_state,
+        )
 
     def update_last_read_time(self):
         self.last_read_time = datetime.now(timezone.utc)
@@ -88,8 +341,7 @@ class Repository:
                         readme = repo.get_readme()
                         self._readme = readme.decoded_content.decode("utf-8")
                     except GithubException as e:
-                        logger.exception(
-                            f"Error getting README for repository {self.full_name}:")
+                        logger.error("README retrieval failed error_type=%s", type(e).__name__)
                         self._readme = None
         self.update_last_read_time()
         return self._readme
@@ -111,8 +363,7 @@ class Repository:
         """
         if self._github is None:
             logger.error(
-                "GitHub credentials are required to retrieve repository '%s'.",
-                self.full_name,
+                "GitHub credentials are required for repository retrieval",
             )
             return None
         if self._repo is None:  # Check if repo object has already been fetched
@@ -131,7 +382,9 @@ class Repository:
                         self.updated_at = self._repo.updated_at
                     except GithubException as e:
                         logger.error(
-                            f"Error retrieving repository '{self.full_name}':{str(e)}")
+                            "Repository retrieval failed error_type=%s",
+                            type(e).__name__,
+                        )
                         return None
         self.update_last_read_time()
         return self._repo
@@ -147,8 +400,10 @@ class Repository:
                         self._structure = self._github.get_repo_structure(
                             self.full_name, self.default_branch)
                     except GithubException as e:
-                        logger.exception(
-                            f"Error getting structure for repository {self.full_name}:")
+                        logger.error(
+                            "Repository structure retrieval failed error_type=%s",
+                            type(e).__name__,
+                        )
                         self._structure = None
         self.update_last_read_time()
         return self._structure
@@ -289,7 +544,7 @@ class Repository:
             '/static/images/',
             '/static/fonts/'
         ]):
-            logger.debug(f"Skipping non-processable file: {file_path}")
+            logger.debug("Skipping non-processable file")
             return None
 
         if file_key not in self._file_contents:  # Check if file content has already been fetched
@@ -306,7 +561,7 @@ class Repository:
                         
                         # Handle directory case
                         if isinstance(file_content, list):
-                            logger.debug(f"Path {file_path} is a directory")
+                            logger.debug("Skipping directory path")
                             return None
 
                         # Improved encoding handling
@@ -314,29 +569,36 @@ class Repository:
                             decoded_content = base64.b64decode(file_content.content).decode('utf-8')
                         elif (file_content.encoding is None or file_content.encoding == 'none') and hasattr(file_content, 'download_url') and file_content.download_url:
                             try:
-                                logger.debug(f"Downloading file {file_path} from {file_content.download_url}")
+                                logger.debug("Downloading raw file content")
                                 # Use requests to download the file content
                                 response = requests.get(
                                     file_content.download_url,
-                                    timeout=30,
+                                    timeout=(5, 30),
                                     headers={'Accept': 'application/vnd.github.v3.raw'}
                                 )
                                 response.raise_for_status()
                                 decoded_content = response.text
                             except requests.RequestException as e:
-                                logger.error(f"Failed to download file {file_path}: {str(e)}")
+                                logger.error(
+                                    "Raw file download failed error_type=%s",
+                                    type(e).__name__,
+                                )
                                 return None
                         else:
                             decoded_content = file_content.decoded_content.decode('utf-8')
                         
                         self._file_contents[file_key] = decoded_content
                     except GithubException as e:
-                        logger.exception(
-                            f"Error getting file content for {file_key} in repository {self.full_name}:")
+                        logger.error(
+                            "File-content retrieval failed error_type=%s",
+                            type(e).__name__,
+                        )
                         return None
                     except UnicodeDecodeError as e:
-                        logger.exception(
-                            f"Error decoding file content for {file_key} in repository {self.full_name}:")
+                        logger.error(
+                            "File-content decode failed error_type=%s",
+                            type(e).__name__,
+                        )
                         return None
 
         self.update_last_read_time()
@@ -377,8 +639,16 @@ class Repository:
                                 re.sub(
                                     r'\n+\s*\n+', '\n', issue['body'].replace('\r', '\n').strip())
                         if comments_amount > 0:
-                            comments = self._github.get_issue_comments(
-                                repo_full_name=self.full_name, issue_number=number)
+                            comments_result = self._bounded_retrieval(
+                                "get_issue_comments_with_status",
+                                "get_issue_comments",
+                                repo_full_name=self.full_name,
+                                issue_number=number,
+                            )
+                            comments = comments_result.items
+                            self._retrieval_meta[f"issue:{number}:comments"] = (
+                                comments_result.to_meta()
+                            )
                             comments_text_list = []
                             for index, comment in enumerate(comments, start=1):
                                 cleaned_body = re.sub(
@@ -395,28 +665,143 @@ class Repository:
                             issue_content = body_content
                         self._issues[number] = issue_content.strip()
                     except GithubException as e:
-                        logger.exception(
-                            f"Error getting issue content for {number} in repository {self.full_name}:")
+                        logger.error(
+                            "Issue-content retrieval failed error_type=%s",
+                            type(e).__name__,
+                        )
                         return None
                     except Exception as e:
-                        logger.error(f"Unexpected error processing : {str(e)}")
+                        logger.error(
+                            "Issue processing failed error_type=%s",
+                            type(e).__name__,
+                        )
                         return None
         self.update_last_read_time()
         return self._issues[number]
     
-    def extract_related_issues(self, pr_data: Dict[str, Any]) -> List[int]:
+    @staticmethod
+    def _related_issue_limit(max_issues: Optional[int]) -> int:
+        """Resolve and validate the per-PR related-issue expansion limit."""
+        resolved_limit = (
+            config.get(
+                "related_issue_max_hits",
+                DEFAULT_RELATED_ISSUE_MAX_HITS,
+            )
+            if max_issues is None
+            else max_issues
+        )
+        if isinstance(resolved_limit, bool) or not isinstance(resolved_limit, int):
+            raise ValueError("max_issues must be a positive integer")
+        if resolved_limit <= 0:
+            raise ValueError("max_issues must be a positive integer")
+        return resolved_limit
+
+    @staticmethod
+    def _select_related_issue_numbers(
+        issue_numbers: List[int],
+        *,
+        exclude_number: Optional[int],
+        max_issues: int,
+    ) -> tuple[List[int], Dict[str, Any]]:
+        """Deduplicate, exclude the current PR, and cap issue expansion."""
+        discovered = []
+        seen = set()
+        for issue_number in issue_numbers:
+            if issue_number in seen:
+                continue
+            seen.add(issue_number)
+            discovered.append(issue_number)
+
+        eligible = [
+            issue_number
+            for issue_number in discovered
+            if issue_number != exclude_number
+        ]
+        selected = eligible[:max_issues]
+        truncated = len(eligible) > max_issues
+        meta = {
+            "outcome": (
+                "partial"
+                if truncated
+                else ("ok" if selected else "no_hit")
+            ),
+            "discovered_count": len(discovered),
+            "eligible_count": len(eligible),
+            "item_count": len(selected),
+            "attempted_count": 0,
+            "successful_count": 0,
+            "max_items": max_issues,
+            "truncated": truncated,
+            "excluded_current_pr": (
+                exclude_number is not None and exclude_number in seen
+            ),
+            "error_type": None,
+        }
+        return selected, meta
+
+    def _expand_related_issue_contents(
+        self,
+        issue_numbers: List[int],
+        meta: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Expand an already-bounded issue selection and finalize its metadata."""
+        contents = [
+            {
+                "issue_number": issue_number,
+                "issue_content": self.get_issue_content(issue_number),
+            }
+            for issue_number in issue_numbers
+        ]
+        successful_count = sum(
+            item["issue_content"] is not None for item in contents
+        )
+        attempted_count = len(contents)
+        meta.update(
+            {
+                "attempted_count": attempted_count,
+                "successful_count": successful_count,
+            }
+        )
+        if attempted_count and successful_count == 0:
+            meta["outcome"] = "error"
+            meta["error_type"] = "content_fetch_incomplete"
+        elif successful_count < attempted_count:
+            meta["outcome"] = "partial"
+            meta["error_type"] = "content_fetch_incomplete"
+        elif meta["truncated"]:
+            meta["outcome"] = "partial"
+
+        self._retrieval_meta["related_issues"] = dict(meta)
+        return contents
+
+    def extract_related_issues(
+        self,
+        pr_data: Dict[str, Any],
+        *,
+        max_issues: Optional[int] = None,
+        exclude_number: Optional[int] = None,
+    ) -> List[int]:
         """
-        Extracts related issue numbers from PR data using adaptive strategies based on content length.
+        Extracts related issue numbers from PR-authored conversation fields.
 
         Uses different matching strategies:
         - Short descriptions (<200 chars): Aggressive patterns for simple references
         - Long descriptions (>=200 chars): Strict patterns to avoid false positives
 
+        Only the PR title/body and explicit comment/interaction bodies are
+        searched. File diffs, branch names, SHAs, CI output, and other nested
+        strings are deliberately excluded because ``#123`` in those fields is
+        not reliable evidence that the PR links issue 123.
+
         Args:
             pr_data: Complete pull request data dictionary
+            max_issues: Maximum unique issue references to return. Uses the
+                configured ``related_issue_max_hits`` default when omitted.
+            exclude_number: Optional current PR number to exclude before the
+                limit is applied.
             
         Returns:
-            List[int] - Sorted list of unique issue numbers
+            List[int] - Bounded, sorted list of unique issue numbers
         """
         # GitHub's official closing keywords
         closing_keywords = (
@@ -436,7 +821,7 @@ class Repository:
             try:
                 description = data.get('pr_metadata', {}).get('description', '')
                 return len(description) if isinstance(description, str) else 0
-            except:
+            except (AttributeError, TypeError):
                 return 0
 
         def extract_with_aggressive_patterns(text: str) -> None:
@@ -472,6 +857,10 @@ class Repository:
                 return
                 
             patterns = [
+                # GitHub's unambiguous same-repository shorthand. Markdown
+                # headings use a space after '#', so they do not match.
+                r'(?<![\w/])#(\d{1,6})\b',
+
                 # Full GitHub URLs (always reliable)
                 rf'(?:https?://)?github\.com/{re.escape(self.full_name)}/(?:issues|pull)/(\d+)',
                 
@@ -500,43 +889,87 @@ class Repository:
             else:
                 extract_with_strict_patterns(text)
 
-        def process_value(value: Any, use_aggressive: bool = False) -> None:
-            """Recursively process values and extract issue numbers"""
-            if isinstance(value, dict):
-                for v in value.values():
-                    process_value(v, use_aggressive)
-            elif isinstance(value, (list, tuple)):
-                for item in value:
-                    process_value(item, use_aggressive)
-            elif isinstance(value, str):
-                extract_from_text(value, use_aggressive)
-
         # Determine strategy based on description length
         desc_length = get_description_length(pr_data)
         use_aggressive_strategy = desc_length < 200
 
-        # Process all PR data
-        process_value(pr_data, use_aggressive_strategy)
+        metadata = (
+            pr_data.get("pr_metadata")
+            if isinstance(pr_data, dict)
+            and isinstance(pr_data.get("pr_metadata"), dict)
+            else {}
+        )
+        source_texts = [
+            value
+            for value in (metadata.get("title"), metadata.get("description"))
+            if isinstance(value, str) and value
+        ]
+        for collection_name in ("interactions", "comments"):
+            collection = (
+                pr_data.get(collection_name)
+                if isinstance(pr_data, dict)
+                and isinstance(pr_data.get(collection_name), list)
+                else []
+            )
+            for item in collection:
+                if not isinstance(item, dict):
+                    continue
+                for field_name in ("content", "body"):
+                    value = item.get(field_name)
+                    if isinstance(value, str) and value:
+                        source_texts.append(value)
 
-        return sorted(list(issues))
+        for text in source_texts:
+            extract_from_text(text, use_aggressive_strategy)
+
+        limit = self._related_issue_limit(max_issues)
+        selected, meta = self._select_related_issue_numbers(
+            sorted(issues),
+            exclude_number=exclude_number,
+            max_issues=limit,
+        )
+        self._retrieval_meta["related_issues"] = meta
+        return selected
 
 
-    def get_issue_contents(self, issue_numbers: List[int], pr_number: int) -> List[Dict[str, Any]]:
+    def get_issue_contents(
+        self,
+        issue_numbers: List[int],
+        pr_number: int,
+        *,
+        max_issues: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Retrieves contents for a list of issue numbers, excluding the PR number.
 
         :param issue_numbers: List of issue numbers.
         :param pr_number: The PR number to exclude.
+        :param max_issues: Maximum issue API calls to make.
         :return: A list of issue contents.
         """
-        return [
-            {
-                "issue_number": issue_number,
-                "issue_content": self.get_issue_content(issue_number)
-            }
-            for issue_number in issue_numbers
-            if issue_number != pr_number
-        ]
+        limit = self._related_issue_limit(max_issues)
+        selected, meta = self._select_related_issue_numbers(
+            issue_numbers,
+            exclude_number=pr_number,
+            max_issues=limit,
+        )
+        return self._expand_related_issue_contents(selected, meta)
+
+    def _collect_related_issue_contents(
+        self,
+        pr_data: Dict[str, Any],
+        pr_number: int,
+        *,
+        max_issues: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Extract and expand related issues without losing discovery metadata."""
+        issue_numbers = self.extract_related_issues(
+            pr_data,
+            max_issues=max_issues,
+            exclude_number=pr_number,
+        )
+        meta = dict(self._retrieval_meta["related_issues"])
+        return self._expand_related_issue_contents(issue_numbers, meta)
     
     def to_isoformat(self, dt: datetime) -> Optional[str]:
         """
@@ -549,13 +982,22 @@ class Repository:
             return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
         return None
 
-    def get_pr_content(self, number, pr=None, context_lines=10, force_update=False) -> Dict[str, Any]:
+    def get_pr_content(
+        self,
+        number,
+        pr=None,
+        context_lines=10,
+        force_update=False,
+        *,
+        related_issue_max_hits=None,
+    ) -> Dict[str, Any]:
         """
         Retrieves and processes the content of a pull request.
 
         :param number: The PR number.
         :param pr: Optional PR object.
         :param context_lines: Number of context lines for diffs.
+        :param related_issue_max_hits: Maximum related issues to expand.
         :return: A dictionary containing detailed PR information.
         """
         if number not in self._prs or force_update:  # Check if issue has already been fetched
@@ -568,8 +1010,20 @@ class Repository:
                             if repo is None:
                                 return None
                             pr = repo.get_pull(number)
-                        pr_files = self._github.get_pr_files(self.full_name, pr.number)
-                        pr_comments = self._github.get_pr_comments(self.full_name, pr.number)
+                        pr_files_result = self._bounded_retrieval(
+                            "get_pr_files_with_status",
+                            "get_pr_files",
+                            repo_full_name=self.full_name,
+                            pr_number=pr.number,
+                        )
+                        pr_comments_result = self._bounded_retrieval(
+                            "get_pr_comments_with_status",
+                            "get_pr_comments",
+                            repo_full_name=self.full_name,
+                            pr_number=pr.number,
+                        )
+                        pr_files = pr_files_result.items
+                        pr_comments = pr_comments_result.items
 
                         # Prepare PR metadata with standardized time formats
                         pr_data = {
@@ -585,58 +1039,42 @@ class Repository:
                                 "state": pr.state,
                                 "base_branch": pr.base.ref,
                                 "head_branch": pr.head.ref,
+                                "head_sha": pr.head.sha,
                             },
                             "related_issues": [],
                             "commits": [],
                             "file_changes": [],
-                            "ci_cd_results": [],
-                            "interactions": []
+                            "ci_cd_results": {
+                                "state": None,
+                                "statuses": [],
+                                "check_runs": [],
+                            },
+                            "interactions": [],
+                            "_retrieval_meta": {
+                                "pr_files": pr_files_result.to_meta(),
+                                "pr_comments": pr_comments_result.to_meta(),
+                            }
                         }
 
-                        # Extract related issues from PR description and comments
-                        related_issues = self.extract_related_issues(pr_data)
-                        pr_data['related_issues'] = self.get_issue_contents(related_issues, pr.number)
-
-                        # Fetch CI/CD results
-                        try:
-                            last_commit = pr.get_commits().reversed[0]
-                            statuses = last_commit.get_statuses()
-                            ci_cd_results = {
-                                "state": None,  # We'll set this later
-                                "statuses": [],
-                                "check_runs": []
-                            }
-                            
-                            # Process statuses
-                            for status in statuses:
-                                if ci_cd_results["state"] is None:
-                                    ci_cd_results["state"] = status.state
-                                ci_cd_results["statuses"].append({
-                                    "context": status.context,
-                                    "state": status.state,
-                                    "description": status.description,
-                                    "target_url": status.target_url,
-                                    "created_at": self.to_isoformat(status.created_at),
-                                    "updated_at": self.to_isoformat(status.updated_at),
-                                })
-
-                            # Fetch check runs for detailed CI/CD outputs
-                            check_runs = last_commit.get_check_runs()
-                            for check_run in check_runs:
-                                ci_cd_results["check_runs"].append({
-                                    "name": check_run.name,
-                                    "status": check_run.status,
-                                    "conclusion": check_run.conclusion,
-                                    "started_at": self.to_isoformat(check_run.started_at) if check_run.started_at else None,
-                                    "completed_at": self.to_isoformat(check_run.completed_at) if check_run.completed_at else None,
-                                    "details_url": check_run.html_url,  # Changed from details_url to html_url
-                                })
-
-                            pr_data["ci_cd_results"] = ci_cd_results
-                        except GithubException as e:
-                            logger.exception(f"Error fetching CI/CD results for PR #{number}")
-                        except IndexError as e:
-                            logger.exception(f"No commits found for PR #{number}")
+                        ci_snapshot = self.get_ci_status_with_status(pr.head.sha)
+                        pr_data["ci_cd_results"] = {
+                            "state": ci_snapshot.state,
+                            "statuses": ci_snapshot.statuses,
+                            "check_runs": ci_snapshot.check_runs,
+                        }
+                        pr_data["_retrieval_meta"].update(ci_snapshot.retrieval_meta)
+                        for source, meta in (
+                            ("statuses", ci_snapshot.statuses_meta),
+                            ("check_runs", ci_snapshot.check_runs_meta),
+                        ):
+                            if meta.get("error_type"):
+                                logger.warning(
+                                    "CI evidence retrieval incomplete pr_number=%s source=%s outcome=%s error_type=%s",
+                                    number,
+                                    source,
+                                    meta.get("outcome"),
+                                    meta.get("error_type"),
+                                )
 
                         # Combine comments and reviews, and sort by creation time
                         pr_interactions = []
@@ -654,35 +1092,117 @@ class Repository:
                                 "comment_id": comment["id"]
                             })
 
+                        # Related-issue extraction is intentionally limited to
+                        # PR title/body and top-level PR comments.  The comments
+                        # have already been fetched, so include them before
+                        # expansion instead of recursively scanning file diffs,
+                        # CI output, SHAs, or other non-conversation fields.
+                        related_issue_sources = {
+                            "pr_metadata": pr_data["pr_metadata"],
+                            "interactions": list(pr_interactions),
+                        }
+                        pr_data["related_issues"] = self._collect_related_issue_contents(
+                            related_issue_sources,
+                            pr.number,
+                            max_issues=related_issue_max_hits,
+                        )
+                        pr_data["_retrieval_meta"]["related_issues"] = dict(
+                            self._retrieval_meta["related_issues"]
+                        )
+                        related_issue_meta = {
+                            str(issue_number): self._retrieval_meta[
+                                f"issue:{issue_number}:comments"
+                            ]
+                            for issue_number in (
+                                item["issue_number"]
+                                for item in pr_data["related_issues"]
+                            )
+                            if f"issue:{issue_number}:comments" in self._retrieval_meta
+                        }
+                        if related_issue_meta:
+                            pr_data["_retrieval_meta"]["related_issue_comments"] = (
+                                related_issue_meta
+                            )
+
                         # Process reviews and inline comments
-                        reviews = pr.get_reviews()
-                        review_comments = pr.get_review_comments()
+                        reviews_result = self._bounded_github_call(
+                            pr.get_reviews, 100
+                        )
+                        review_comments_result = self._bounded_github_call(
+                            pr.get_review_comments, 200
+                        )
+                        reviews = reviews_result.items
+                        review_comments = review_comments_result.items
+                        pr_data["_retrieval_meta"].update(
+                            {
+                                "reviews": reviews_result.to_meta(),
+                                "review_comments": review_comments_result.to_meta(),
+                            }
+                        )
                         for review in reviews:
-                            pr_review = {
+                            review_raw = (
+                                review.raw_data
+                                if isinstance(getattr(review, "raw_data", None), dict)
+                                else {}
+                            )
+                            pr_interactions.append({
                                 "type": "review",
                                 "author": review.user.login,
-                                "author_association": review.raw_data['author_association'],
+                                "author_association": review_raw.get("author_association"),
                                 "content": review.body,
                                 "state": review.state,
                                 "created_at": self.to_isoformat(review.submitted_at),
                                 "comment_id": review.id
-                            }
-                            # Process inline comments with threading
-                            for comment in review_comments:
-                                if comment.pull_request_review_id == review.id:
-                                    pr_review["type"] = "inline_comment"
-                                    pr_review["content"] = comment.body
-                                    pr_review["path"] = comment.path
-                                    pr_review["diff_hunk"] = comment.diff_hunk
-                            pr_interactions.append(pr_review)
+                            })
+
+                        # A review can own multiple inline comments. Preserve
+                        # every comment as its own interaction instead of
+                        # repeatedly overwriting the review summary with the
+                        # last comment in that review.
+                        for comment in review_comments:
+                            comment_raw = (
+                                comment.raw_data
+                                if isinstance(getattr(comment, "raw_data", None), dict)
+                                else {}
+                            )
+                            user = getattr(comment, "user", None)
+                            pr_interactions.append({
+                                "type": "inline_comment",
+                                "author": getattr(user, "login", None),
+                                "author_association": comment_raw.get(
+                                    "author_association"
+                                ),
+                                "content": comment.body,
+                                "path": comment.path,
+                                "diff_hunk": comment.diff_hunk,
+                                "created_at": self.to_isoformat(
+                                    getattr(comment, "created_at", None)
+                                ),
+                                "comment_id": comment.id,
+                                "review_id": comment.pull_request_review_id,
+                            })
 
                         # Sort interactions by creation time
-                        pr_interactions.sort(key=lambda x: parser.isoparse(x["created_at"]))
+                        pr_interactions.sort(
+                            key=lambda item: (
+                                not bool(item.get("created_at")),
+                                str(item.get("created_at") or ""),
+                            )
+                        )
                         pr_data["interactions"] = pr_interactions
 
                         # Fetch and process commits
                         try:
-                            commits = pr.get_commits()
+                            commits, commits_truncated = self._bounded_iterable(
+                                pr.get_commits(), 250
+                            )
+                            pr_data["_retrieval_meta"]["commits"] = {
+                                "outcome": "partial" if commits_truncated else (
+                                    "ok" if commits else "no_hit"
+                                ),
+                                "item_count": len(commits),
+                                "truncated": commits_truncated,
+                            }
                             for commit in commits:
                                 commit_data = {
                                     "sha": commit.sha,
@@ -698,7 +1218,11 @@ class Repository:
                                 }
                                 pr_data["commits"].append(commit_data)
                         except GithubException as e:
-                            logger.exception(f"Error fetching commits for PR #{number}")
+                            logger.error(
+                                "Commit retrieval failed pr_number=%s error_type=%s",
+                                number,
+                                type(e).__name__,
+                            )
                             pr_data["commits"] = []
                             pr_data["commit_stats"] = {}
 
@@ -738,14 +1262,23 @@ class Repository:
                                         patches = [f.patch for f in comparison.files if f.filename == file_path]
                                         custom_diff = patches[0] if patches else None
                                     except Exception as e:
-                                        logger.exception(f"Error fetching file diff for PR #{number}")
+                                        logger.error(
+                                            "Diff fallback failed pr_number=%s error_type=%s",
+                                            number,
+                                            type(e).__name__,
+                                        )
                                         custom_diff = ''
 
                             # Categorize code changes
                             change_categories = CodeAnalyzer.categorize_change(custom_diff)
 
                             # Extract imports from head content
-                            related_modules = CodeAnalyzer.extract_imports(head_content) if language == 'Python' and head_content else []
+                            related_modules = (
+                                CodeAnalyzer.extract_imports(head_content)
+                                if head_content
+                                and CodeAnalyzer.is_python_file(file_path, language)
+                                else []
+                            )
 
                             # Build file change entry
                             file_change = {
@@ -775,12 +1308,16 @@ class Repository:
                                 })
 
                             pr_data['file_changes'].append(file_change)
-                            logger.debug(f"Processed file: {file_path}")
+                            logger.debug("Processed PR file")
 
                         self._prs[number] = pr_data
-                        logger.debug(f"Collected details for PR #{number}: {pr.title}")
+                        logger.debug("Collected details for PR #%s", number)
                     except Exception as e:
-                        logger.exception(f"Error getting PR content for #{number} in repository {self.full_name}")
+                        logger.error(
+                            "PR-content retrieval failed pr_number=%s error_type=%s",
+                            number,
+                            type(e).__name__,
+                        )
         self.update_last_read_time()
         return self._prs.get(number)
 
@@ -809,10 +1346,21 @@ class Repository:
             self._repo = None  # Reset the Repo cache
         with self._pr_lock:
             self._prs = {}  # Reset the PR cache
+        self._retrieval_meta = {}
 
 
 class RepositoryPool:
-    def __init__(self, github_instance, cleanup_interval=3600, max_idle_time=86400):
+    def __init__(
+        self,
+        github_instance,
+        cleanup_interval=3600,
+        max_idle_time=86400,
+        cleanup_enabled=True,
+    ):
+        if cleanup_interval <= 0:
+            raise ValueError("cleanup_interval must be positive")
+        if max_idle_time <= 0:
+            raise ValueError("max_idle_time must be positive")
         self._locks_registry = {}
         self._registry_lock = Lock()
         self._pool = {}
@@ -820,30 +1368,65 @@ class RepositoryPool:
         self.cleanup_interval = cleanup_interval
         self.max_idle_time = max_idle_time
         self._stop_event = Event()
-        self._cleanup_thread = Thread(target=self._cleanup, daemon=True)
-        self._cleanup_thread.start()
+        self._cleanup_thread = None
+        if cleanup_enabled:
+            self._cleanup_thread = Thread(target=self._cleanup, daemon=True)
+            self._cleanup_thread.start()
 
-    def _cleanup(self):  # Internal method for cleaning up idle repository objects' cache content, not real delete repository objects
-        """Periodically checks and removes idle repository objects."""
-        while not self._stop_event.is_set():
-            with self._registry_lock:
-                current_time = datetime.now(timezone.utc)
-                for full_name in list(self._pool.keys()):
-                    repo = self._pool[full_name]
-                    if ((current_time - repo.last_read_time).total_seconds() > self.max_idle_time) or \
-                        ((current_time - repo.creation_time).total_seconds() > 7 * self.max_idle_time and
-                         (current_time - repo.last_read_time).total_seconds() > (self.max_idle_time // 4) + 1):
-                        # release the lock due to object already created
-                        self._locks_registry.pop(full_name, None)
-                        # clear the cache content of repository object
-                        self._pool[full_name].clear_cache()
-            time.sleep(self.cleanup_interval)
+    def _cleanup_once(self, current_time=None):
+        """Evict idle repositories and their per-repository locks from the pool."""
+        current_time = current_time or datetime.now(timezone.utc)
+        evicted = []
+        with self._registry_lock:
+            candidates = [
+                (full_name, repo, self._locks_registry.get(full_name))
+                for full_name, repo in self._pool.items()
+            ]
+
+        for full_name, candidate, repo_lock in candidates:
+            if repo_lock is None or not repo_lock.acquire(blocking=False):
+                continue
+            try:
+                with self._registry_lock:
+                    repo = self._pool.get(full_name)
+                    if repo is not candidate:
+                        continue
+                    idle_seconds = (current_time - repo.last_read_time).total_seconds()
+                    age_seconds = (current_time - repo.creation_time).total_seconds()
+                    should_evict = idle_seconds > self.max_idle_time or (
+                        age_seconds > 7 * self.max_idle_time
+                        and idle_seconds > (self.max_idle_time // 4) + 1
+                    )
+                    if should_evict:
+                        evicted.append(self._pool.pop(full_name))
+                        if self._locks_registry.get(full_name) is repo_lock:
+                            self._locks_registry.pop(full_name, None)
+            finally:
+                repo_lock.release()
+
+        for repo in evicted:
+            repo.clear_cache()
+        return len(evicted)
+
+    def _cleanup(self):
+        """Wait interruptibly between cleanup passes."""
+        while not self._stop_event.wait(self.cleanup_interval):
+            self._cleanup_once()
 
     def stop_cleanup(self):
         """Stops the cleanup thread."""
         self._stop_event.set()
-        if self._cleanup_thread.is_alive():
+        if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
             self._cleanup_thread.join(timeout=1)
+
+    close = stop_cleanup
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
 
     def _get_repo_lock(self, full_name):
         """Retrieve or create a lock for a specific repository."""
@@ -861,8 +1444,9 @@ class RepositoryPool:
         Otherwise the default github_instance within the pool might not fit to the new repository object.
         """
 
-        if full_name in self._pool:
-            repo = self._pool[full_name]
+        with self._registry_lock:
+            repo = self._pool.get(full_name)
+        if repo is not None:
             if github_instance is not None:
                 repo.set_github(github_instance)
                 self.github_instance = github_instance
@@ -871,12 +1455,15 @@ class RepositoryPool:
         
         repo_lock = self._get_repo_lock(full_name)
         with repo_lock:
-            if full_name not in self._pool:
+            with self._registry_lock:
+                repo = self._pool.get(full_name)
+            if repo is None:
                 if github_instance is not None:
                     repo = Repository(full_name, github_instance, **kwargs)
                     self.github_instance = github_instance
                 else:
                     repo = Repository(full_name, self.github_instance, **kwargs)
-                self._pool[full_name] = repo
+                with self._registry_lock:
+                    self._pool[full_name] = repo
 
-        return self._pool[full_name]
+        return repo

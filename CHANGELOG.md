@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-12
+
+### Added
+- Added status-aware code/issue search APIs that distinguish `ok`, `no_hit`, `partial`, and `error`
+- Added bounded pagination metadata for PR files and comments, plus the captured PR `head_sha`
+- Added exact-head, bounded CI refresh with independently typed status/check-run evidence
+- Added explicit repository-pool shutdown and an option to disable its cleanup worker
+
+### Changed
+- Made the public `GithubRAG` import lazy so retrieval-only consumers do not import the ML/RAG stack
+- Added connect/read timeouts, bounded REST pagination, privacy-safe logging, and immutable revisions for built-in Jina models
+- Bounded related-issue extraction and expansion with configurable limits and truncation metadata
+- Limited related-issue discovery to PR title/body and top-level PR comments, while retaining bare `#123` references in long descriptions
+- Preserved review summaries and every inline review comment as separate chronological interactions
+- Reduced commit-status history to the newest result per logical context while preserving fetched/current counts
+- Raised dependency security floors while keeping the full install and public high-level RAG API compatible
+- Hardened release and secret-scanning workflows with pinned actions, full-history scanning, checksum verification, and job-scoped PyPI OIDC
+- Added a release artifact allowlist that rejects stale or unexplained files in the built wheel
+
+### Fixed
+- Prevented Python AST parsing from being selected for non-Python paths based only on repository language metadata
+- Fixed repository-pool cleanup so expired entries are actually evicted instead of retaining empty objects
+- Fixed `get_pr_content()` so already-fetched PR comments participate in related-issue discovery instead of being processed too late
+
 ## [0.4.0] - 2026-03-25
 
 ### Changed
@@ -157,6 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration with LLM for processing and generating responses
 
 [0.1.4]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.3...v0.1.4
+[0.4.1]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.0...v0.4.1
 [0.1.3]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.0...v0.1.1

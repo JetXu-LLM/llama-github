@@ -10,7 +10,7 @@ By participating in this project, you agree to abide by the [Code of Conduct](CO
 
 Requirements:
 
-- Python `3.10+`
+- Python `3.10` through `3.14`
 
 Setup:
 
@@ -25,6 +25,8 @@ Validation:
 ```bash
 pytest -q
 python -m build
+python -m twine check dist/*
+python -m pip_audit
 ```
 
 ## Guidelines

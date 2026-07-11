@@ -1,5 +1,5 @@
 import logging
-import pytest
+
 from llama_github.logger import configure_logging, logger
 
 def test_configure_logging_defaults():

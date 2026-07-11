@@ -1,21 +1,15 @@
 title = "gitleaks config"
 
-[[rules]]
-description = "OpenAI API Key"
-regex = '''sk-[a-zA-Z0-9]{32}'''
-tags = ["apikey"]
+[extend]
+useDefault = true
 
 [[rules]]
-description = "Hugging Face Token"
-regex = '''hf_[a-zA-Z0-9]{40}'''
-tags = ["apikey"]
-
-[[rules]]
-description = "GitHub Token"
-regex = '''ghp_[a-zA-Z0-9]{36}'''
-tags = ["apikey"]
-
-[[rules]]
+id = "llama-jina-api-key"
 description = "Jina AI API Key"
 regex = '''jina_[a-zA-Z0-9]{32}[a-zA-Z0-9]{16}'''
 tags = ["apikey"]
+
+[[allowlists]]
+description = "Synthetic anonymizer fixture"
+regexTarget = "match"
+regexes = ['''sk-1234567890abcdef1234567890abcdef''']

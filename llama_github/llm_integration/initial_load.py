@@ -27,6 +27,8 @@ class LLMManager:
         rerank_model: Optional[str] = config.get("default_reranker"),
         llm: Any = None,
         simple_mode: bool = False,
+        embedding_revision: Optional[str] = None,
+        rerank_revision: Optional[str] = None,
     ):
         """
         Initialize an instance-scoped model manager.
@@ -40,6 +42,16 @@ class LLMManager:
         self.open_source_models_hg_dir = open_source_models_hg_dir
         self.embedding_model_name = embedding_model or config.get("default_embedding")
         self.rerank_model_name = rerank_model or config.get("default_reranker")
+        self.embedding_revision = embedding_revision
+        if self.embedding_revision is None and (
+            self.embedding_model_name == config.get("default_embedding")
+        ):
+            self.embedding_revision = config.get("default_embedding_revision")
+        self.rerank_revision = rerank_revision
+        if self.rerank_revision is None and (
+            self.rerank_model_name == config.get("default_reranker")
+        ):
+            self.rerank_revision = config.get("default_reranker_revision")
         self.simple_mode = simple_mode
 
         self.llm = llm
@@ -48,6 +60,7 @@ class LLMManager:
         self.embedding_model = None
         self.rerank_model = None
         self._provider_warning_emitted = False
+        self._revision_warnings_emitted = set()
 
         if llm is not None:
             self.model_type = "Custom"
@@ -148,8 +161,12 @@ class LLMManager:
 
         from transformers import AutoTokenizer
 
-        logger.info("Initializing tokenizer %s...", self.embedding_model_name)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.embedding_model_name)
+        logger.info("Initializing tokenizer with configured embedding model")
+        kwargs = self._model_revision_kwargs("embedding", self.embedding_revision)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.embedding_model_name,
+            **kwargs,
+        )
 
     def _ensure_embedding_model_loaded(self) -> None:
         """Load the embedding model lazily when semantic ranking is needed."""
@@ -159,10 +176,12 @@ class LLMManager:
         from transformers import AutoModel
 
         self._ensure_tokenizer_loaded()
-        logger.info("Initializing embedding model %s...", self.embedding_model_name)
+        logger.info("Initializing configured embedding model")
+        kwargs = self._model_revision_kwargs("embedding", self.embedding_revision)
         self.embedding_model = AutoModel.from_pretrained(
             self.embedding_model_name,
             trust_remote_code=True,
+            **kwargs,
         ).to(self._get_device())
 
     def _ensure_rerank_model_loaded(self) -> None:
@@ -172,12 +191,30 @@ class LLMManager:
 
         from transformers import AutoModelForSequenceClassification
 
-        logger.info("Initializing reranker %s...", self.rerank_model_name)
+        logger.info("Initializing configured reranker")
+        kwargs = self._model_revision_kwargs("reranker", self.rerank_revision)
         self.rerank_model = AutoModelForSequenceClassification.from_pretrained(
             self.rerank_model_name,
             num_labels=1,
             trust_remote_code=True,
+            **kwargs,
         ).to(self._get_device())
+
+    def _model_revision_kwargs(
+        self,
+        model_kind: str,
+        revision: Optional[str],
+    ) -> dict:
+        """Pin built-in models and warn once when callers choose an unpinned model."""
+        if revision:
+            return {"revision": revision}
+        if model_kind not in self._revision_warnings_emitted:
+            logger.warning(
+                "Custom %s model has no immutable revision; remote code may change",
+                model_kind,
+            )
+            self._revision_warnings_emitted.add(model_kind)
+        return {}
 
     def get_llm(self):
         """Return the main chat model, loading it if necessary."""

@@ -1,2 +1,6 @@
 include llama_github/config/config.json
 include CHANGELOG.md
+include pytest.ini
+include tests/*.py
+include scripts/*.py
+prune tests/self

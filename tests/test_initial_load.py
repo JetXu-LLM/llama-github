@@ -61,7 +61,69 @@ class TestLLMManager:
         assert manager.get_rerank_model() is fake_reranker
         auto_tokenizer.from_pretrained.assert_called_with("emb-model")
 
+    def test_default_jina_models_use_immutable_revisions(self, monkeypatch):
+        fake_tokenizer = MagicMock()
+        fake_embedding = MagicMock()
+        fake_embedding.to.return_value = fake_embedding
+        fake_reranker = MagicMock()
+        fake_reranker.to.return_value = fake_reranker
+        auto_tokenizer = MagicMock()
+        auto_tokenizer.from_pretrained.return_value = fake_tokenizer
+        auto_model = MagicMock()
+        auto_model.from_pretrained.return_value = fake_embedding
+        auto_seq = MagicMock()
+        auto_seq.from_pretrained.return_value = fake_reranker
+        monkeypatch.setitem(
+            sys.modules,
+            "transformers",
+            SimpleNamespace(
+                AutoTokenizer=auto_tokenizer,
+                AutoModel=auto_model,
+                AutoModelForSequenceClassification=auto_seq,
+            ),
+        )
+        monkeypatch.setattr(LLMManager, "_get_device", lambda self: "cpu")
+
+        manager = LLMManager(simple_mode=False)
+        manager.get_embedding_model()
+        manager.get_rerank_model()
+
+        embedding_revision = "516f4baf13dec4ddddda8631e019b5737c8bc250"
+        reranker_revision = "9cfeff2df7d40d1b78e75e5e9cebec92a99813c9"
+        auto_tokenizer.from_pretrained.assert_called_with(
+            "jinaai/jina-embeddings-v2-base-code",
+            revision=embedding_revision,
+        )
+        auto_model.from_pretrained.assert_called_with(
+            "jinaai/jina-embeddings-v2-base-code",
+            trust_remote_code=True,
+            revision=embedding_revision,
+        )
+        auto_seq.from_pretrained.assert_called_with(
+            "jinaai/jina-reranker-v2-base-multilingual",
+            num_labels=1,
+            trust_remote_code=True,
+            revision=reranker_revision,
+        )
+
     def test_simple_mode_skips_heavy_models(self):
         manager = LLMManager(simple_mode=True)
         assert manager.get_embedding_model() is None
         assert manager.get_rerank_model() is None
+
+    def test_legacy_positional_constructor_order_remains_compatible(self):
+        custom_llm = object()
+        manager = LLMManager(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            custom_llm,
+            True,
+        )
+
+        assert manager.llm is custom_llm
+        assert manager.simple_mode is True
+        assert manager.embedding_revision is not custom_llm

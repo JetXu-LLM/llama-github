@@ -4,15 +4,24 @@ on:
   release:
     types: [created]
 
+permissions:
+  contents: read
+
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  release-gates:
+    uses: ./.github/workflows/tests.yml
     permissions:
-      id-token: write
+      contents: read
+
+  build-and-test:
+    needs: release-gates
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Install dependencies
@@ -21,11 +30,43 @@ jobs:
           pip install -e .[dev]
       - name: Run tests
         run: pytest -q
+      - name: Verify release tag matches package version
+        run: |
+          python - <<'PY'
+          import os
+          from llama_github.version import __version__
+
+          expected = f"v{__version__}"
+          actual = os.environ["GITHUB_REF_NAME"]
+          if actual != expected:
+              raise SystemExit(f"release tag {actual!r} does not match {expected!r}")
+          PY
       - name: Build package
         run: python -m build
-      - name: List distribution files
-        run: ls -l dist/
+      - name: Verify wheel contains only current source package files
+        run: python scripts/verify_distribution_contents.py dist/*.whl
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+      - name: Upload immutable distribution artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Download tested distribution artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: python-package-distributions
+          path: dist/
       - name: Publish package
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
         with:
           packages-dir: dist/

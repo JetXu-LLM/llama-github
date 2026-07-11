@@ -96,11 +96,11 @@ class LLMHandler:
                 return response.content
             return response
         except Exception as exc:
-            logger.exception(
-                "Call %sllm with #%s# generated an exception: %s",
+            logger.error(
+                "LLM call failed mode=%s question_length=%s error_type=%s",
                 "simple " if simple_llm else "",
-                human_question,
-                exc,
+                len(human_question or ""),
+                type(exc).__name__,
             )
             if output_structure is not None:
                 raise

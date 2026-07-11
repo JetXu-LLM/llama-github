@@ -163,3 +163,7 @@ cython_debug/
 tests/self/
 tests/self/*
 tests/self/*/*
+
+# macOS metadata
+.DS_Store
+._*

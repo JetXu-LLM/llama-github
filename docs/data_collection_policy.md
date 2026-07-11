@@ -24,6 +24,10 @@ The library keeps in-memory process-local caches to reduce repeated GitHub API c
 - pull request content
 
 This caching is runtime memory only unless your own application persists data separately.
+`repo_cleanup_enabled=False` disables the background cleanup worker, not the in-memory
+pool itself. `GithubRAG.close()` stops that worker and closes the GitHub client; callers
+should also drop their references to the `GithubRAG`, pool, and repository objects when
+cached content is no longer needed.
 
 ## Credentials And Sensitive Data
 
@@ -36,6 +40,10 @@ You are responsible for how credentials and prompts are supplied and stored in y
 - Jina API keys
 - user queries
 - retrieved contexts
+
+The library's own logs do not include raw user queries, retrieved context bodies, or
+private source content. Applications can still send those values to configured model
+or search providers as part of the documented retrieval flow.
 
 ## Third-Party Policies
 

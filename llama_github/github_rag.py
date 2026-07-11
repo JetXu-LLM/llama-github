@@ -49,6 +49,8 @@ class GithubRAG:
         rerank_model: Optional[str] = config.get("default_reranker"),
         llm: Any = None,
         simple_mode: bool = False,
+        embedding_revision: Optional[str] = None,
+        rerank_revision: Optional[str] = None,
         **kwargs,
     ) -> None:
         """
@@ -66,6 +68,8 @@ class GithubRAG:
             rerank_model: Reranker model identifier used in professional mode.
             llm: Optional injected LangChain-compatible chat model.
             simple_mode: When True, skip heavyweight embedding/reranker loading.
+            embedding_revision: Immutable Hugging Face revision for a custom embedding model.
+            rerank_revision: Immutable Hugging Face revision for a custom reranker.
             **kwargs: Optional repository-pool settings such as cleanup interval and max idle time.
         """
         try:
@@ -93,6 +97,7 @@ class GithubRAG:
             param_mapping = {
                 "repo_cleanup_interval": "cleanup_interval",
                 "repo_max_idle_time": "max_idle_time",
+                "repo_cleanup_enabled": "cleanup_enabled",
             }
             repo_pool_kwargs = {
                 param_mapping[key]: value
@@ -112,6 +117,8 @@ class GithubRAG:
                 open_source_models_hg_dir=open_source_models_hg_dir,
                 embedding_model=embedding_model,
                 rerank_model=rerank_model,
+                embedding_revision=embedding_revision,
+                rerank_revision=rerank_revision,
                 llm=llm,
                 simple_mode=self.simple_mode,
             )
@@ -121,7 +128,9 @@ class GithubRAG:
             )
             logger.info("GithubRAG initialization completed.")
         except Exception as exc:
-            logger.error("Error during GithubRAG initialization: %s", exc)
+            logger.error(
+                "GithubRAG initialization failed error_type=%s", type(exc).__name__
+            )
             raise
 
     def _run_async(self, coroutine):
@@ -149,6 +158,21 @@ class GithubRAG:
             return loop.run_until_complete(coroutine)
 
         return asyncio.create_task(coroutine)
+
+    def close(self) -> None:
+        """Release the repository-pool worker and the underlying GitHub client."""
+        if getattr(self, "RepositoryPool", None) is not None:
+            self.RepositoryPool.close()
+        if getattr(self, "auth_manager", None) is not None:
+            self.auth_manager.close_connection()
+        self.github_instance = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
 
     def _query_token_count(self, query: str) -> int:
         """Estimate token count using the configured tokenizer when available."""
@@ -193,7 +217,10 @@ class GithubRAG:
                 )
 
             analyzed_strategy = await self.rag_processor.analyze_question(query)
-            logger.debug("Analyze strategy: %s", analyzed_strategy)
+            logger.debug(
+                "Question analysis completed strategy_fields=%s",
+                len(analyzed_strategy),
+            )
             query_tokens = self._query_token_count(query)
 
             task_google_search = asyncio.create_task(
@@ -239,7 +266,7 @@ class GithubRAG:
                 )
             logger.info("Context retrieved successfully.")
         except Exception as exc:
-            logger.error("Error retrieving context: %s", exc)
+            logger.error("Context retrieval failed error_type=%s", type(exc).__name__)
             raise
         return topn_contexts
 
@@ -289,7 +316,7 @@ class GithubRAG:
             result = unique_list
             logger.info("Code search retrieved successfully.")
         except Exception as exc:
-            logger.error("Error retrieving code search: %s", exc)
+            logger.error("Code search retrieval failed error_type=%s", type(exc).__name__)
         return result
 
     async def issue_search_retrieval(self, query, draft_answer: Optional[str] = None):
@@ -323,7 +350,7 @@ class GithubRAG:
             result = unique_list
             logger.info("Issue search retrieved successfully.")
         except Exception as exc:
-            logger.error("Error retrieving issue search: %s", exc)
+            logger.error("Issue search retrieval failed error_type=%s", type(exc).__name__)
         return result
 
     async def google_search_retrieval(self, query):
@@ -358,9 +385,9 @@ class GithubRAG:
                 content = self.github_api_handler.get_github_url_content(github_url)
                 if content:
                     result.append({"url": github_url, "content": content})
-            logger.info("Google search retrieved successfully: %s", urls)
+            logger.info("Google search retrieved successfully url_count=%s", len(urls))
         except Exception as exc:
-            logger.error("Error retrieving google search: %s", exc)
+            logger.error("Web search retrieval failed error_type=%s", type(exc).__name__)
         return result
 
     def _get_repository_rag_info(self, repository: Repository):
@@ -420,11 +447,17 @@ class GithubRAG:
                             }
                         )
                     except Exception as exc:
-                        logger.error("Error getting repository info: %s", exc)
+                        logger.error(
+                            "Repository info retrieval failed error_type=%s",
+                            type(exc).__name__,
+                        )
 
             logger.info("Repo search retrieved successfully.")
         except Exception as exc:
-            logger.error("Error retrieving repos search: %s", exc)
+            logger.error(
+                "Repository search retrieval failed error_type=%s",
+                type(exc).__name__,
+            )
         return results_with_index
 
     def answer_with_context(
@@ -449,7 +482,7 @@ class GithubRAG:
         """
         if contexts is None:
             contexts = await self.async_retrieve_context(query, simple_mode)
-            logger.debug("Retrieved contexts: %s", contexts)
+            logger.debug("Retrieved context_count=%s", len(contexts))
 
         context_contents = []
         for context in contexts:

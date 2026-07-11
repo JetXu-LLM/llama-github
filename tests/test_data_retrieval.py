@@ -1,8 +1,15 @@
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+from github import GithubException
 
 from llama_github.data_retrieval.github_api import GitHubAPIHandler
 from llama_github.data_retrieval.github_entities import Repository, RepositoryPool
+from llama_github.github_integration.github_auth_manager import (
+    RetrievalOutcome,
+    RetrievalResult,
+)
 
 
 class TestRepository:
@@ -41,6 +48,470 @@ class TestRepository:
 
         assert content == 'print("hello")'
 
+    def test_get_pr_content_includes_current_head_sha(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_github_instance.get_pr_files.return_value = []
+        mock_github_instance.get_pr_comments.return_value = []
+        mock_github_instance.get_pr_files_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.ERROR,
+            status_code=503,
+            error_type="http_503",
+        )
+        mock_github_instance.get_pr_comments_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        pr = MagicMock()
+        pr.number = 7
+        pr.title = "Bounded change"
+        pr.body = "No linked issue"
+        pr.user.login = "author"
+        pr.raw_data = {"author_association": "MEMBER"}
+        pr.created_at = datetime.now(timezone.utc)
+        pr.updated_at = datetime.now(timezone.utc)
+        pr.merged_at = None
+        pr.state = "open"
+        pr.base.ref = "main"
+        pr.base.sha = "base-sha"
+        pr.head.ref = "feature"
+        pr.head.sha = "head-sha-123"
+        latest_commit = MagicMock()
+        latest_commit.get_statuses.return_value = []
+        latest_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = latest_commit
+        pr.get_commits.return_value = []
+        pr.get_reviews.return_value = []
+        pr.get_review_comments.return_value = []
+
+        repo = Repository("owner/test-repo", mock_github_instance)
+        result = repo.get_pr_content(7, pr=pr)
+
+        assert result["pr_metadata"]["head_sha"] == "head-sha-123"
+        assert result["_retrieval_meta"]["pr_files"]["outcome"] == "error"
+        assert result["_retrieval_meta"]["pr_files"]["error_type"] == "http_503"
+        assert result["_retrieval_meta"]["pr_comments"]["outcome"] == "no_hit"
+        assert result["_retrieval_meta"]["related_issues"] == {
+            "outcome": "no_hit",
+            "discovered_count": 0,
+            "eligible_count": 0,
+            "item_count": 0,
+            "attempted_count": 0,
+            "successful_count": 0,
+            "max_items": 20,
+            "truncated": False,
+            "excluded_current_pr": False,
+            "error_type": None,
+        }
+        assert result["_retrieval_meta"]["ci_statuses"]["outcome"] == "no_hit"
+        assert result["_retrieval_meta"]["ci_aggregate"]["outcome"] == "no_hit"
+        mock_repo_object.get_commit.assert_called_once_with(sha="head-sha-123")
+        assert pr.get_commits.call_count == 1
+
+    def test_get_pr_content_preserves_statuses_when_check_runs_fail(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_github_instance.get_pr_files_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        mock_github_instance.get_pr_comments_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        pr = MagicMock()
+        pr.number = 8
+        pr.title = "Keep independent CI evidence"
+        pr.body = "No linked issue"
+        pr.user.login = "author"
+        pr.raw_data = {"author_association": "MEMBER"}
+        pr.created_at = datetime.now(timezone.utc)
+        pr.updated_at = datetime.now(timezone.utc)
+        pr.merged_at = None
+        pr.state = "open"
+        pr.base.ref = "main"
+        pr.base.sha = "base-sha"
+        pr.head.ref = "feature"
+        pr.head.sha = "head-sha-456"
+        pr.get_commits.return_value = []
+        pr.get_reviews.return_value = []
+        pr.get_review_comments.return_value = []
+
+        failed_status = MagicMock()
+        failed_status.context = "unit-tests"
+        failed_status.state = "failure"
+        failed_status.description = "tests failed"
+        failed_status.target_url = "https://example.invalid/check"
+        failed_status.created_at = datetime.now(timezone.utc)
+        failed_status.updated_at = datetime.now(timezone.utc)
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = [failed_status]
+        head_commit.get_check_runs.side_effect = GithubException(
+            503,
+            {"message": "temporarily unavailable"},
+        )
+        mock_repo_object.get_commit.return_value = head_commit
+
+        repo = Repository("owner/test-repo", mock_github_instance)
+        result = repo.get_pr_content(8, pr=pr)
+
+        assert result["ci_cd_results"]["statuses"][0]["state"] == "failure"
+        assert result["ci_cd_results"]["check_runs"] == []
+        assert result["_retrieval_meta"]["ci_statuses"]["outcome"] == "ok"
+        assert result["_retrieval_meta"]["ci_check_runs"]["outcome"] == "error"
+        assert result["_retrieval_meta"]["ci_check_runs"]["status_code"] == 503
+        assert result["_retrieval_meta"]["ci_check_runs"]["error_type"] == "GithubException"
+        assert result["_retrieval_meta"]["ci_aggregate"]["outcome"] == "partial"
+
+    def test_get_pr_content_expands_issue_reference_from_pr_comment(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_github_instance.get_pr_files_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        mock_github_instance.get_pr_comments_with_status.return_value = RetrievalResult(
+            items=[
+                {
+                    "id": 101,
+                    "body": "Fixes #42",
+                    "created_at": "2026-07-10T12:00:00Z",
+                    "user": {"login": "maintainer"},
+                    "author_association": "MEMBER",
+                }
+            ],
+            outcome=RetrievalOutcome.OK,
+            pages_fetched=1,
+            status_code=200,
+        )
+        pr = MagicMock()
+        pr.number = 7
+        pr.title = "Use the new parser"
+        pr.body = "No issue reference in the PR body."
+        pr.user.login = "author"
+        pr.raw_data = {"author_association": "CONTRIBUTOR"}
+        pr.created_at = datetime.now(timezone.utc)
+        pr.updated_at = datetime.now(timezone.utc)
+        pr.merged_at = None
+        pr.state = "open"
+        pr.base.ref = "main"
+        pr.base.sha = "base-sha"
+        pr.head.ref = "feature"
+        pr.head.sha = "head-sha"
+        pr.get_reviews.return_value = []
+        pr.get_review_comments.return_value = []
+        pr.get_commits.return_value = []
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = head_commit
+
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_issue_content = MagicMock(return_value="issue 42")
+
+        result = repo.get_pr_content(7, pr=pr)
+
+        assert result["related_issues"] == [
+            {"issue_number": 42, "issue_content": "issue 42"}
+        ]
+        repo.get_issue_content.assert_called_once_with(42)
+
+    def test_get_pr_content_preserves_review_and_each_inline_comment(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_github_instance.get_pr_files_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        mock_github_instance.get_pr_comments_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        pr = MagicMock()
+        pr.number = 8
+        pr.title = "Preserve review context"
+        pr.body = "No linked issue"
+        pr.user.login = "author"
+        pr.raw_data = {"author_association": "CONTRIBUTOR"}
+        pr.created_at = datetime.now(timezone.utc)
+        pr.updated_at = datetime.now(timezone.utc)
+        pr.merged_at = None
+        pr.state = "open"
+        pr.base.ref = "main"
+        pr.base.sha = "base-sha"
+        pr.head.ref = "feature"
+        pr.head.sha = "head-sha"
+        pr.get_commits.return_value = []
+
+        review = MagicMock()
+        review.id = 501
+        review.user.login = "reviewer"
+        review.raw_data = {"author_association": "MEMBER"}
+        review.body = "Overall review summary"
+        review.state = "CHANGES_REQUESTED"
+        review.submitted_at = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+        pr.get_reviews.return_value = [review]
+
+        comments = []
+        for comment_id, minute, body, path in (
+            (601, 1, "First inline finding", "src/one.py"),
+            (602, 2, "Second inline finding", "src/two.py"),
+        ):
+            comment = MagicMock()
+            comment.id = comment_id
+            comment.pull_request_review_id = review.id
+            comment.user.login = "reviewer"
+            comment.raw_data = {"author_association": "MEMBER"}
+            comment.body = body
+            comment.path = path
+            comment.diff_hunk = "@@ -1 +1 @@"
+            comment.created_at = datetime(
+                2026, 7, 10, 12, minute, tzinfo=timezone.utc
+            )
+            comments.append(comment)
+        pr.get_review_comments.return_value = comments
+
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = head_commit
+
+        repo = Repository("owner/test-repo", mock_github_instance)
+        result = repo.get_pr_content(8, pr=pr)
+
+        assert [item["type"] for item in result["interactions"]] == [
+            "review",
+            "inline_comment",
+            "inline_comment",
+        ]
+        assert [item["content"] for item in result["interactions"]] == [
+            "Overall review summary",
+            "First inline finding",
+            "Second inline finding",
+        ]
+        assert [
+            item.get("path") for item in result["interactions"]
+        ] == [None, "src/one.py", "src/two.py"]
+
+    def test_ci_status_helper_rejects_empty_head_sha(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        with pytest.raises(ValueError, match="head_sha is required"):
+            repo.get_ci_status_with_status("")
+
+    def test_ci_status_helper_returns_typed_error_for_missing_head(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_commit.side_effect = GithubException(
+            404,
+            {"message": "not found"},
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("missing-head")
+
+        assert snapshot.outcome is RetrievalOutcome.ERROR
+        assert snapshot.statuses == []
+        assert snapshot.check_runs == []
+        assert snapshot.statuses_meta["status_code"] == 404
+        assert snapshot.check_runs_meta["error_type"] == "GithubException"
+
+    def test_ci_status_helper_keeps_only_latest_state_per_status_context(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        old_failure = MagicMock(
+            context="build",
+            state="failure",
+            description="old run failed",
+            target_url="https://example.invalid/run/1",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        latest_success = MagicMock(
+            context="build",
+            state="success",
+            description="rerun passed",
+            target_url="https://example.invalid/run/2",
+            created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = [old_failure, latest_success]
+        head_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha")
+
+        assert snapshot.state == "success"
+        assert [item["state"] for item in snapshot.statuses] == ["success"]
+        assert snapshot.statuses_meta["item_count"] == 2
+        assert snapshot.retrieval_meta["ci_statuses"]["current_item_count"] == 1
+
+    def test_related_issue_collection_makes_no_calls_for_zero_references(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_issue_content = MagicMock()
+
+        contents = repo._collect_related_issue_contents(
+            {"pr_metadata": {"description": "No linked issue"}},
+            pr_number=7,
+            max_issues=3,
+        )
+
+        assert contents == []
+        repo.get_issue_content.assert_not_called()
+        assert repo._retrieval_meta["related_issues"] == {
+            "outcome": "no_hit",
+            "discovered_count": 0,
+            "eligible_count": 0,
+            "item_count": 0,
+            "attempted_count": 0,
+            "successful_count": 0,
+            "max_items": 3,
+            "truncated": False,
+            "excluded_current_pr": False,
+            "error_type": None,
+        }
+
+    def test_related_issue_extraction_ignores_refs_outside_pr_conversation(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        issue_numbers = repo.extract_related_issues(
+            {
+                "pr_metadata": {
+                    "title": "Refactor parser",
+                    "description": "No linked issue",
+                },
+                "file_changes": [
+                    {
+                        "file_path": "src/parser.py",
+                        "diff": "+ #123 is a data-format marker",
+                    }
+                ],
+            }
+        )
+
+        assert issue_numbers == []
+
+    def test_related_issue_extraction_keeps_bare_ref_in_long_pr_body(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        issue_numbers = repo.extract_related_issues(
+            {
+                "pr_metadata": {
+                    "description": (
+                        "This description intentionally contains enough context to "
+                        "use the conservative matching path. "
+                        + ("detail " * 30)
+                        + "Additional context is available in #77."
+                    )
+                }
+            }
+        )
+
+        assert issue_numbers == [77]
+
+    def test_related_issue_collection_expands_all_references_under_limit(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_issue_content = MagicMock(
+            side_effect=lambda number: f"issue {number}"
+        )
+
+        contents = repo._collect_related_issue_contents(
+            {"pr_metadata": {"description": "Fixes #5 and relates to #2"}},
+            pr_number=7,
+            max_issues=3,
+        )
+
+        assert contents == [
+            {"issue_number": 2, "issue_content": "issue 2"},
+            {"issue_number": 5, "issue_content": "issue 5"},
+        ]
+        assert repo.get_issue_content.call_args_list == [call(2), call(5)]
+        meta = repo._retrieval_meta["related_issues"]
+        assert meta["outcome"] == "ok"
+        assert meta["discovered_count"] == 2
+        assert meta["eligible_count"] == 2
+        assert meta["attempted_count"] == 2
+        assert meta["successful_count"] == 2
+        assert meta["truncated"] is False
+
+    def test_related_issue_collection_excludes_pr_before_truncating(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_issue_content = MagicMock(
+            side_effect=lambda number: f"issue {number}"
+        )
+        description = " ".join(f"Fixes #{number}" for number in range(1, 26))
+
+        contents = repo._collect_related_issue_contents(
+            {"pr_metadata": {"description": description}},
+            pr_number=1,
+            max_issues=3,
+        )
+
+        assert [item["issue_number"] for item in contents] == [2, 3, 4]
+        assert repo.get_issue_content.call_args_list == [call(2), call(3), call(4)]
+        meta = repo._retrieval_meta["related_issues"]
+        assert meta["outcome"] == "partial"
+        assert meta["discovered_count"] == 25
+        assert meta["eligible_count"] == 24
+        assert meta["item_count"] == 3
+        assert meta["attempted_count"] == 3
+        assert meta["successful_count"] == 3
+        assert meta["max_items"] == 3
+        assert meta["truncated"] is True
+        assert meta["excluded_current_pr"] is True
+
+    def test_related_issue_collection_uses_configured_default_limit(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_issue_content = MagicMock(return_value="issue")
+        description = " ".join(f"Fixes #{number}" for number in range(1, 26))
+
+        contents = repo._collect_related_issue_contents(
+            {"pr_metadata": {"description": description}},
+            pr_number=99,
+        )
+
+        assert len(contents) == 20
+        assert repo.get_issue_content.call_count == 20
+        meta = repo._retrieval_meta["related_issues"]
+        assert meta["discovered_count"] == 25
+        assert meta["max_items"] == 20
+        assert meta["truncated"] is True
+
 
 class TestRepositoryPool:
     def test_pool_is_instance_scoped(self, mock_github_instance):
@@ -52,6 +523,12 @@ class TestRepositoryPool:
         finally:
             pool1.stop_cleanup()
             pool2.stop_cleanup()
+
+    def test_pool_can_disable_cleanup_thread(self, mock_github_instance):
+        pool = RepositoryPool(mock_github_instance, cleanup_enabled=False)
+
+        assert pool._cleanup_thread is None
+        pool.close()
 
     def test_get_repository_caching(self, mock_github_instance, mock_repo_object):
         mock_github_instance.get_repo.return_value = mock_repo_object
@@ -67,8 +544,12 @@ class TestRepositoryPool:
             pool.stop_cleanup()
 
     def test_cleanup_logic(self, mock_github_instance):
-        pool = RepositoryPool(mock_github_instance, cleanup_interval=0.1, max_idle_time=0.1)
-        pool.stop_cleanup()
+        pool = RepositoryPool(
+            mock_github_instance,
+            cleanup_interval=0.1,
+            max_idle_time=0.1,
+            cleanup_enabled=False,
+        )
 
         mock_repo = MagicMock()
         mock_repo.last_read_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
@@ -78,20 +559,18 @@ class TestRepositoryPool:
             pool._pool["expired/repo"] = mock_repo
             pool._locks_registry["expired/repo"] = MagicMock()
 
-        with patch("llama_github.data_retrieval.github_entities.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2025, 1, 1, tzinfo=timezone.utc)
-            with pool._registry_lock:
-                current_time = mock_dt.now(timezone.utc)
-                if (current_time - mock_repo.last_read_time).total_seconds() > pool.max_idle_time:
-                    pool._locks_registry.pop("expired/repo", None)
-                    mock_repo.clear_cache()
+        evicted = pool._cleanup_once(datetime(2025, 1, 1, tzinfo=timezone.utc))
 
         mock_repo.clear_cache.assert_called()
+        assert evicted == 1
+        assert "expired/repo" not in pool._pool
+        assert "expired/repo" not in pool._locks_registry
 
 
 class TestGitHubAPIHandler:
     def test_search_code_integration(self, mock_github_instance):
-        handler = GitHubAPIHandler(mock_github_instance)
+        pool = RepositoryPool(mock_github_instance, cleanup_enabled=False)
+        handler = GitHubAPIHandler(mock_github_instance, pool=pool)
 
         mock_code_result = {
             "name": "test.py",
@@ -116,3 +595,63 @@ class TestGitHubAPIHandler:
 
             assert len(results) == 1
             assert results[0]["content"] == "content"
+
+    def test_code_search_expansion_failure_is_not_reported_as_ok(
+        self, mock_github_instance
+    ):
+        pool = RepositoryPool(mock_github_instance, cleanup_enabled=False)
+        handler = GitHubAPIHandler(mock_github_instance, pool=pool)
+        mock_github_instance.search_code_with_status.return_value = RetrievalResult(
+            items=[
+                {
+                    "name": "test.py",
+                    "path": "test.py",
+                    "repository": {"full_name": "owner/repo"},
+                    "html_url": "https://example.invalid/test.py",
+                }
+            ],
+            outcome=RetrievalOutcome.OK,
+            pages_fetched=1,
+            status_code=200,
+        )
+
+        with patch.object(
+            handler,
+            "_get_file_content_through_repository",
+            return_value=(MagicMock(), None),
+        ):
+            result = handler.search_code_with_status("query")
+
+        assert result.items == []
+        assert result.outcome is RetrievalOutcome.PARTIAL
+        assert result.error_type == "content_fetch_incomplete"
+
+    def test_issue_search_expansion_failure_is_not_reported_as_ok(
+        self, mock_github_instance
+    ):
+        pool = RepositoryPool(mock_github_instance, cleanup_enabled=False)
+        handler = GitHubAPIHandler(mock_github_instance, pool=pool)
+        mock_github_instance.search_issues_with_status.return_value = RetrievalResult(
+            items=[
+                {
+                    "url": "https://api.github.com/repos/owner/repo/issues/1",
+                    "body": "issue body",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+            outcome=RetrievalOutcome.OK,
+            pages_fetched=1,
+            status_code=200,
+        )
+
+        with patch.object(
+            handler,
+            "_get_issue_content_through_repository",
+            return_value=None,
+        ):
+            result = handler.search_issues_with_status("query")
+
+        assert result.items == []
+        assert result.outcome is RetrievalOutcome.PARTIAL
+        assert result.error_type == "content_fetch_incomplete"

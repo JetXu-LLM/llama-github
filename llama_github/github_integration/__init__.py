@@ -1,7 +1,13 @@
-# Import the AuthManager for easy access
-from .github_auth_manager import GitHubAuthManager
+from .github_auth_manager import (
+    ExtendedGithub,
+    GitHubAuthManager,
+    RetrievalOutcome,
+    RetrievalResult,
+)
 
-# Define what is available for import
-__all__ = ["GitHubAuthManager"]
-
-# Any initialization code specific to GitHub integration can go here
+__all__ = [
+    "ExtendedGithub",
+    "GitHubAuthManager",
+    "RetrievalOutcome",
+    "RetrievalResult",
+]

@@ -1,15 +1,2 @@
-PyGithub>=2.4,<3
-aiohttp>=3.9,<4
-ipython>=8,<9
-langchain-core>=0.3.30,<0.4
-langchain-mistralai>=0.2,<0.3
-langchain-openai>=0.3.0,<0.4
-langchain-text-splitters>=0.3.0,<0.4
-nest-asyncio>=1.6,<2
-numpy>=1.24,<3
-pydantic>=2.10,<3
-python-dateutil>=2.9,<3
-requests>=2.31,<3
-tokenizers>=0.20,<1
-transformers>=4.47,<6
-urllib3>=2,<3
+# Runtime dependency metadata has one authoritative source: pyproject.toml.
+.

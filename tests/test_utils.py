@@ -46,6 +46,19 @@ class TestDataAnonymizer:
         assert "test@example.com" not in anonymized
 
 class TestCodeAnalyzer:
+    @pytest.mark.parametrize(
+        ("path", "language", "expected"),
+        [
+            ("src/app.py", "Python", True),
+            ("src/types.pyi", None, True),
+            ("README.md", "Python", False),
+            ("Dockerfile", "Python", False),
+            ("src/app.js", "Python", False),
+        ],
+    )
+    def test_python_detection_requires_python_extension(self, path, language, expected):
+        assert CodeAnalyzer.is_python_file(path, language) is expected
+
     def test_extract_imports(self):
         code = """
 import os

@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Python `3.10+`
+- Python `3.10` through `3.14`
 
 ## Install From PyPI
 
@@ -35,4 +35,6 @@ python -c "import llama_github; print(llama_github.__version__)"
 ```bash
 pytest -q
 python -m build
+python -m twine check dist/*
+python -m pip_audit
 ```

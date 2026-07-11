@@ -3,6 +3,10 @@ name: Test
 on:
   push:
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -10,10 +14,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -22,6 +28,116 @@ jobs:
           pip install -e .[dev]
       - name: Run tests
         run: pytest -q
+      - name: Validate installed dependencies
+        run: python -m pip check
       - name: Build package
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.14'
         run: python -m build
+      - name: Validate distributions
+        if: matrix.python-version == '3.14'
+        run: python -m twine check dist/*
+      - name: Test source distribution
+        if: matrix.python-version == '3.14'
+        run: |
+          source_root="${RUNNER_TEMP}/llama-github-sdist"
+          mkdir -p "${source_root}"
+          python -m tarfile -e dist/*.tar.gz "${source_root}"
+          source_dir="$(find "${source_root}" -mindepth 1 -maxdepth 1 -type d -name 'llama_github-*' -print -quit)"
+          test -n "${source_dir}"
+          (cd "${source_dir}" && python -m pytest -q)
+
+  minimum-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.10"
+      - name: Install declared lower bounds
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-deps -e .
+          python -m pip install \
+            "PyGithub==2.4.0" "PyJWT[crypto]==2.13.0" \
+            "aiohttp==3.14.1" "ipython==8.10.0" \
+            "langchain-core==1.3.3" "langchain-mistralai==1.0.0" \
+            "langchain-openai==1.1.14" "langchain-text-splitters==1.1.2" \
+            "nest-asyncio==1.6.0" "numpy==1.26.4" "pydantic==2.10.0" \
+            "python-dateutil==2.9.0.post0" "requests==2.33.0" \
+            "tokenizers==0.22.1" "transformers==5.3.0" "urllib3==2.7.0" \
+            "pytest>=9.0.3,<10" "pytest-asyncio>=1.3,<2" "pip-audit>=2.10,<3"
+      - run: python -m pip check
+      - run: python -m pip_audit
+      - run: pytest -q
+
+  build-backend-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.10"
+      - name: Build with the declared backend floor
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "setuptools==77.0.3" wheel build twine
+          python -m build --no-isolation
+          python -m twine check dist/*
+
+  minimal-import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Build and install minimal retrieval closure
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          python -m pip install PyGithub requests python-dateutil
+          python -m pip install --no-deps dist/*.whl
+      - name: Verify lightweight imports
+        run: |
+          python - <<'PY'
+          import sys
+          import importlib.util
+          import llama_github
+          from llama_github.data_retrieval.github_api import GitHubAPIHandler
+          from llama_github.data_retrieval.github_entities import CIStatusSnapshot, Repository, RepositoryPool
+          from llama_github.github_integration.github_auth_manager import GitHubAuthManager
+          from llama_github.utils import AsyncHTTPClient, DiffGenerator
+
+          forbidden = {
+              "IPython", "aiohttp", "langchain_core", "langchain_mistralai",
+              "langchain_openai", "langchain_text_splitters", "numpy", "pydantic",
+              "tokenizers", "torch", "transformers",
+          }
+          installed = {name for name in forbidden if importlib.util.find_spec(name) is not None}
+          if installed:
+              raise SystemExit(f"heavy modules installed in retrieval closure: {sorted(installed)}")
+          loaded = forbidden.intersection(sys.modules)
+          if loaded:
+              raise SystemExit(f"heavy modules loaded by retrieval imports: {sorted(loaded)}")
+          assert callable(Repository.get_ci_status_with_status)
+          assert llama_github.__version__ == "0.4.1"
+          PY
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .[dev]
+      - run: python -m pip_audit
