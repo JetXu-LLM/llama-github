@@ -122,6 +122,49 @@ incomplete, not that no more comments exist.
 
 The method returns `None` if the PR cannot be retrieved.
 
+## `Repository.read_text_file_bounded(file_path, sha=None, *, opt_in=None)`
+
+Reads one UTF-8 repository file under a fixed 2 MiB source cap and returns a
+`BoundedTextReadResult`. It does not change the older `get_file_content()`
+exclusion rules or cache.
+
+The result has these typed outcomes:
+
+- `success`
+- `excluded_by_policy`
+- `not_found`
+- `oversize`
+- `binary_or_non_utf8`
+- `directory`
+- `error`
+
+`to_meta()` returns content-free size, policy, status, and error metadata. The
+cap is checked once against GitHub's declared file size and again while reading
+or decoding the response, so metadata is never trusted as the only bound.
+GitHub's Contents API has separate behavior for 1–100 MB objects; this API's
+smaller cap is an intentional local product boundary. See the
+[GitHub Contents API](https://docs.github.com/en/rest/repos/contents?apiVersion=2026-03-10).
+
+Dependency lockfiles and CI configuration require one exact opt-in:
+
+```python
+from llama_github.data_retrieval import BoundedTextReadOptIn
+
+lock_result = repo.read_text_file_bounded(
+    "uv.lock",
+    sha=head_sha,
+    opt_in=BoundedTextReadOptIn.DEPENDENCY_LOCK,
+)
+workflow_result = repo.read_text_file_bounded(
+    ".github/workflows/test.yml",
+    sha=head_sha,
+    opt_in=BoundedTextReadOptIn.CI_CONFIG,
+)
+```
+
+An opt-in is not a general exclusion bypass. A mismatched opt-in and binary,
+generated, minified, or sensitive paths remain `excluded_by_policy`.
+
 ## `Repository.get_ci_status_with_status(head_sha, *, max_statuses=100, max_check_runs=100)`
 
 Fetches commit statuses and check runs for one exact head SHA without traversing the

@@ -54,6 +54,18 @@ class _JSONResponse:
     error_type: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _BoundedBytesResponse:
+    """Private transport result for a size-capped raw GitHub response."""
+
+    data: Optional[bytes] = None
+    bytes_read: int = 0
+    declared_size_bytes: Optional[int] = None
+    status_code: Optional[int] = None
+    error_type: Optional[str] = None
+    oversize: bool = False
+
+
 class GitHubAuthManager:
     """Manage personal-token and GitHub-App authentication for `ExtendedGithub` clients."""
 
@@ -242,6 +254,92 @@ class ExtendedGithub(Github):
     def _request_json(self, url: str, params: Optional[dict] = None):
         """Compatibility helper returning decoded JSON or ``None`` on failure."""
         return self._request_json_response(url, params).data
+
+    def _request_bounded_bytes(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        operation: str = "github_raw_get",
+    ) -> _BoundedBytesResponse:
+        """Download at most ``max_bytes`` while retaining typed failure metadata."""
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+
+        self._ensure_fresh_token()
+        session = self._build_session()
+        headers = {
+            "Accept": "application/vnd.github.raw+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self._access_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
+
+        try:
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=(self._connect_timeout, self._read_timeout),
+                stream=True,
+            )
+            response.raise_for_status()
+
+            declared_size = None
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    parsed_length = int(content_length)
+                    if parsed_length >= 0:
+                        declared_size = parsed_length
+                except (TypeError, ValueError):
+                    declared_size = None
+            if declared_size is not None and declared_size > max_bytes:
+                return _BoundedBytesResponse(
+                    declared_size_bytes=declared_size,
+                    status_code=response.status_code,
+                    oversize=True,
+                )
+
+            chunks = []
+            bytes_read = 0
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                bytes_read += len(chunk)
+                if bytes_read > max_bytes:
+                    return _BoundedBytesResponse(
+                        bytes_read=bytes_read,
+                        declared_size_bytes=declared_size,
+                        status_code=response.status_code,
+                        oversize=True,
+                    )
+                chunks.append(chunk)
+            return _BoundedBytesResponse(
+                data=b"".join(chunks),
+                bytes_read=bytes_read,
+                declared_size_bytes=declared_size,
+                status_code=response.status_code,
+            )
+        except HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            logger.warning(
+                "GitHub request failed operation=%s error_type=http_error status_code=%s",
+                operation,
+                status_code,
+            )
+            return _BoundedBytesResponse(
+                status_code=status_code,
+                error_type=f"http_{status_code}" if status_code else "http_error",
+            )
+        except RequestException as exc:
+            logger.warning(
+                "GitHub request failed operation=%s error_type=%s",
+                operation,
+                type(exc).__name__,
+            )
+            return _BoundedBytesResponse(error_type=type(exc).__name__)
+        finally:
+            session.close()
 
     def _request_paginated_list(
         self,

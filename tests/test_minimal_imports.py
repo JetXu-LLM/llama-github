@@ -12,7 +12,7 @@ def test_retrieval_imports_do_not_load_heavy_rag_dependencies():
         assert "llama_github.github_rag" not in sys.modules
 
         from llama_github.data_retrieval.github_api import GitHubAPIHandler
-        from llama_github.data_retrieval.github_entities import CIStatusSnapshot, Repository, RepositoryPool
+        from llama_github.data_retrieval.github_entities import BoundedTextReadResult, CIStatusSnapshot, Repository, RepositoryPool
         from llama_github.github_integration.github_auth_manager import GitHubAuthManager
         from llama_github.utils import AsyncHTTPClient, DiffGenerator
 
@@ -20,7 +20,9 @@ def test_retrieval_imports_do_not_load_heavy_rag_dependencies():
         loaded = forbidden.intersection(sys.modules)
         assert not loaded, sorted(loaded)
         assert callable(Repository.get_ci_status_with_status)
-        assert llama_github.__version__ == "0.4.1"
+        assert callable(Repository.read_text_file_bounded)
+        assert BoundedTextReadResult.__name__ == "BoundedTextReadResult"
+        assert llama_github.__version__ == "0.4.2"
         """
     )
 

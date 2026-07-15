@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-07-15
+
+### Added
+- Added a typed, fixed-cap repository text-read API with distinct success, policy, missing, oversize, binary, directory, and transport outcomes
+- Added explicit `dependency_lock` and `ci_config` opt-ins without changing the legacy `get_file_content()` exclusion or cache contract
+
+### Security
+- Enforced the 2 MiB product cap both from GitHub size metadata and while streaming raw bytes
+- Kept binary, generated, minified, and sensitive paths outside the new opt-in surface
+
 ## [0.4.1] - 2026-07-12
 
 ### Added
@@ -181,6 +191,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration with LLM for processing and generating responses
 
 [0.1.4]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.3...v0.1.4
+[0.4.2]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.0...v0.4.1
 [0.1.3]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.1...v0.1.2

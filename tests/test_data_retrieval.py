@@ -1,11 +1,19 @@
+import base64
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 from github import GithubException
 
 from llama_github.data_retrieval.github_api import GitHubAPIHandler
-from llama_github.data_retrieval.github_entities import Repository, RepositoryPool
+from llama_github.data_retrieval.github_entities import (
+    BOUNDED_TEXT_SOURCE_MAX_BYTES,
+    BoundedTextReadOptIn,
+    BoundedTextReadOutcome,
+    Repository,
+    RepositoryPool,
+)
 from llama_github.github_integration.github_auth_manager import (
     RetrievalOutcome,
     RetrievalResult,
@@ -47,6 +55,191 @@ class TestRepository:
         content = repo.get_file_content("src/test.py")
 
         assert content == 'print("hello")'
+
+    def test_bounded_text_read_preserves_legacy_lockfile_exclusion(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("package-lock.json") is None
+        result = repo.read_text_file_bounded("package-lock.json")
+
+        assert result.outcome is BoundedTextReadOutcome.EXCLUDED_BY_POLICY
+        assert result.policy_class == "dependency_lock"
+        mock_repo_object.get_contents.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("path", "opt_in", "expected_policy"),
+        [
+            ("uv.lock", BoundedTextReadOptIn.DEPENDENCY_LOCK, "dependency_lock"),
+            (
+                ".github/workflows/test.yml",
+                BoundedTextReadOptIn.CI_CONFIG,
+                "ci_config",
+            ),
+        ],
+    )
+    def test_bounded_text_read_allows_only_exact_high_intent_opt_in(
+        self,
+        mock_github_instance,
+        mock_repo_object,
+        path,
+        opt_in,
+        expected_policy,
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        content = b"version = 1\n"
+        file_obj = SimpleNamespace(
+            type="file",
+            size=len(content),
+            encoding="base64",
+            content=base64.b64encode(content).decode("ascii"),
+        )
+        mock_repo_object.get_contents.return_value = file_obj
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        result = repo.read_text_file_bounded(path, sha="head", opt_in=opt_in)
+
+        assert result.outcome is BoundedTextReadOutcome.SUCCESS
+        assert result.content == content.decode("utf-8")
+        assert result.policy_class == expected_policy
+        assert result.source_size_bytes == len(content)
+        assert result.bytes_read == len(content)
+        assert "content" not in result.to_meta()
+        mock_repo_object.get_contents.assert_called_once_with(path, ref="head")
+
+    @pytest.mark.parametrize(
+        ("path", "opt_in"),
+        [
+            ("uv.lock", BoundedTextReadOptIn.CI_CONFIG),
+            ("src/main.py", BoundedTextReadOptIn.CI_CONFIG),
+            (".env", None),
+            ("dist/app.min.js", None),
+        ],
+    )
+    def test_bounded_text_read_rejects_mismatched_or_non_text_policy(
+        self, mock_github_instance, mock_repo_object, path, opt_in
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        result = repo.read_text_file_bounded(path, opt_in=opt_in)
+
+        assert result.outcome is BoundedTextReadOutcome.EXCLUDED_BY_POLICY
+        mock_repo_object.get_contents.assert_not_called()
+
+    def test_bounded_text_read_rejects_oversize_before_content_access(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        file_obj = MagicMock()
+        file_obj.type = "file"
+        file_obj.size = BOUNDED_TEXT_SOURCE_MAX_BYTES + 1
+        mock_repo_object.get_contents.return_value = file_obj
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        result = repo.read_text_file_bounded("src/large.txt")
+
+        assert result.outcome is BoundedTextReadOutcome.OVERSIZE
+        assert result.source_size_bytes == BOUNDED_TEXT_SOURCE_MAX_BYTES + 1
+        assert file_obj.content.call_count == 0
+
+    @pytest.mark.parametrize(
+        ("payload_size", "expected"),
+        [
+            (BOUNDED_TEXT_SOURCE_MAX_BYTES, BoundedTextReadOutcome.SUCCESS),
+            (BOUNDED_TEXT_SOURCE_MAX_BYTES + 1, BoundedTextReadOutcome.OVERSIZE),
+        ],
+    )
+    def test_bounded_text_read_enforces_local_cap_after_decode(
+        self, mock_github_instance, mock_repo_object, payload_size, expected
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        payload = b"a" * payload_size
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            type="file",
+            size=BOUNDED_TEXT_SOURCE_MAX_BYTES,
+            encoding="base64",
+            content=base64.b64encode(payload).decode("ascii"),
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        result = repo.read_text_file_bounded("src/large.txt")
+
+        assert result.outcome is expected
+
+    @pytest.mark.parametrize("payload", [b"\xff\xfe", b"text\x00tail"])
+    def test_bounded_text_read_rejects_binary_or_non_utf8(
+        self, mock_github_instance, mock_repo_object, payload
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            type="file",
+            size=len(payload),
+            encoding="base64",
+            content=base64.b64encode(payload).decode("ascii"),
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        result = repo.read_text_file_bounded("src/data.txt")
+
+        assert result.outcome is BoundedTextReadOutcome.BINARY_OR_NON_UTF8
+
+    def test_bounded_text_read_distinguishes_directory_not_found_and_error(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        mock_repo_object.get_contents.return_value = []
+        assert (
+            repo.read_text_file_bounded("src").outcome
+            is BoundedTextReadOutcome.DIRECTORY
+        )
+
+        mock_repo_object.get_contents.side_effect = GithubException(404, {"message": "missing"})
+        assert (
+            repo.read_text_file_bounded("missing.txt").outcome
+            is BoundedTextReadOutcome.NOT_FOUND
+        )
+
+        mock_repo_object.get_contents.side_effect = GithubException(503, {"message": "down"})
+        assert (
+            repo.read_text_file_bounded("unavailable.txt").outcome
+            is BoundedTextReadOutcome.ERROR
+        )
+
+    def test_bounded_text_read_maps_raw_transport_outcomes(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            type="file",
+            size=None,
+            encoding="none",
+            url="https://api.github.test/contents/src/config.txt",
+            download_url=None,
+        )
+        mock_github_instance._request_bounded_bytes.return_value = SimpleNamespace(
+            data=b"tail = true\n",
+            bytes_read=12,
+            declared_size_bytes=12,
+            status_code=200,
+            error_type=None,
+            oversize=False,
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        result = repo.read_text_file_bounded("src/config.txt")
+
+        assert result.outcome is BoundedTextReadOutcome.SUCCESS
+        assert result.content == "tail = true\n"
+        mock_github_instance._request_bounded_bytes.assert_called_once_with(
+            "https://api.github.test/contents/src/config.txt",
+            max_bytes=BOUNDED_TEXT_SOURCE_MAX_BYTES,
+            operation="bounded_text_read",
+        )
 
     def test_get_pr_content_includes_current_head_sha(
         self, mock_github_instance, mock_repo_object

@@ -120,6 +120,29 @@ independently typed. Status history is reduced to the newest result per GitHub c
 while retrieval metadata retains both fetched and current item counts. Its aggregate
 outcome is retrieval metadata, not a merge verdict.
 
+## Bounded High-Intent Text Reads
+
+Use the typed bounded API when a deterministic plan explicitly needs a lockfile
+or CI configuration that the generic retrieval path intentionally excludes:
+
+```python
+from llama_github.data_retrieval import BoundedTextReadOptIn
+
+result = repo.read_text_file_bounded(
+    "uv.lock",
+    sha=pr_content["pr_metadata"]["head_sha"],
+    opt_in=BoundedTextReadOptIn.DEPENDENCY_LOCK,
+)
+if result.outcome.value == "success":
+    print(result.content)
+else:
+    print(result.to_meta())
+```
+
+The 2 MiB source cap is a local cost and replayability boundary, not a GitHub
+platform limit. `get_file_content()` remains the backward-compatible generic
+API; callers should not use the bounded opt-ins as a broad file-policy bypass.
+
 ## Logging
 
 `llama-github` does not auto-configure logging on import. If you want library logs:

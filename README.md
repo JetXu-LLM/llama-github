@@ -18,13 +18,14 @@ pip install llama-github
 
 Current maintained runtime target: Python `3.10` through `3.14`.
 
-Version `0.4.1` keeps the existing high-level API while allowing retrieval-only
+Version `0.4.2` keeps the existing high-level API while allowing retrieval-only
 integrations to import GitHub and diff helpers without loading the ML/RAG dependency
 stack. Built-in Jina models are pinned to immutable revisions; custom remote-code
 models should provide their own immutable revision. Pull-request retrieval now keeps
 bounded fetch-health metadata, expands related issues only from PR conversation
 evidence, and preserves review summaries plus each inline comment without collapsing
-them together.
+them together. Deterministic planners can explicitly opt into typed, 2 MiB-capped
+lockfile or CI-config reads without weakening the generic file policy.
 
 ## Usage
 

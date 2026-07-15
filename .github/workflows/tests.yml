@@ -110,7 +110,7 @@ jobs:
           import importlib.util
           import llama_github
           from llama_github.data_retrieval.github_api import GitHubAPIHandler
-          from llama_github.data_retrieval.github_entities import CIStatusSnapshot, Repository, RepositoryPool
+          from llama_github.data_retrieval.github_entities import BoundedTextReadResult, CIStatusSnapshot, Repository, RepositoryPool
           from llama_github.github_integration.github_auth_manager import GitHubAuthManager
           from llama_github.utils import AsyncHTTPClient, DiffGenerator
 
@@ -126,7 +126,9 @@ jobs:
           if loaded:
               raise SystemExit(f"heavy modules loaded by retrieval imports: {sorted(loaded)}")
           assert callable(Repository.get_ci_status_with_status)
-          assert llama_github.__version__ == "0.4.1"
+          assert callable(Repository.read_text_file_bounded)
+          assert BoundedTextReadResult.__name__ == "BoundedTextReadResult"
+          assert llama_github.__version__ == "0.4.2"
           PY
 
   dependency-audit:

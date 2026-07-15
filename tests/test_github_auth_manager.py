@@ -148,6 +148,67 @@ class TestExtendedGithub:
         assert session.get.call_args.kwargs["timeout"] == (2.5, 9.0)
         session.close.assert_called_once()
 
+    def test_bounded_raw_request_rejects_declared_oversize_before_stream(self):
+        gh = ExtendedGithub("token")
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"Content-Length": "11"}
+        session = MagicMock()
+        session.get.return_value = response
+        gh._build_session = MagicMock(return_value=session)
+
+        result = gh._request_bounded_bytes(
+            "https://api.github.com/example",
+            max_bytes=10,
+        )
+
+        assert result.oversize is True
+        assert result.declared_size_bytes == 11
+        response.iter_content.assert_not_called()
+        assert session.get.call_args.kwargs["stream"] is True
+        session.close.assert_called_once()
+
+    def test_bounded_raw_request_rejects_stream_that_crosses_cap(self):
+        gh = ExtendedGithub("token")
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {}
+        response.iter_content.return_value = [b"123456", b"78901"]
+        session = MagicMock()
+        session.get.return_value = response
+        gh._build_session = MagicMock(return_value=session)
+
+        result = gh._request_bounded_bytes(
+            "https://api.github.com/example",
+            max_bytes=10,
+        )
+
+        assert result.oversize is True
+        assert result.bytes_read == 11
+        assert result.data is None
+        session.close.assert_called_once()
+
+    def test_bounded_raw_request_returns_exact_cap(self):
+        gh = ExtendedGithub("token")
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"Content-Length": "10"}
+        response.iter_content.return_value = [b"12345", b"67890"]
+        session = MagicMock()
+        session.get.return_value = response
+        gh._build_session = MagicMock(return_value=session)
+
+        result = gh._request_bounded_bytes(
+            "https://api.github.com/example",
+            max_bytes=10,
+        )
+
+        assert result.oversize is False
+        assert result.data == b"1234567890"
+        assert result.bytes_read == 10
+        assert result.declared_size_bytes == 10
+        session.close.assert_called_once()
+
     def test_refresh_token_updates_requester(self):
         gh = ExtendedGithub("token-1")
         gh.refresh_token("token-2")

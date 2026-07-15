@@ -2,6 +2,7 @@ from github import GithubException
 from threading import Lock, Event, Thread
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from enum import Enum
 
 from typing import Optional, Dict, Any, List, Callable
 from llama_github.logger import logger
@@ -18,10 +19,143 @@ import requests
 from llama_github.config.config import config
 from llama_github.utils import DiffGenerator, CodeAnalyzer
 
-__all__ = ["CIStatusSnapshot", "Repository", "RepositoryPool"]
+__all__ = [
+    "BoundedTextReadOptIn",
+    "BoundedTextReadOutcome",
+    "BoundedTextReadResult",
+    "CIStatusSnapshot",
+    "Repository",
+    "RepositoryPool",
+]
 
 
 DEFAULT_RELATED_ISSUE_MAX_HITS = 20
+BOUNDED_TEXT_SOURCE_MAX_BYTES = 2 * 1024 * 1024
+
+
+class BoundedTextReadOutcome(str, Enum):
+    """Truthful terminal outcome for one bounded repository text read."""
+
+    SUCCESS = "success"
+    EXCLUDED_BY_POLICY = "excluded_by_policy"
+    NOT_FOUND = "not_found"
+    OVERSIZE = "oversize"
+    BINARY_OR_NON_UTF8 = "binary_or_non_utf8"
+    DIRECTORY = "directory"
+    ERROR = "error"
+
+
+class BoundedTextReadOptIn(str, Enum):
+    """Narrow high-intent exceptions to the default repository-read policy."""
+
+    DEPENDENCY_LOCK = "dependency_lock"
+    CI_CONFIG = "ci_config"
+
+
+@dataclass(frozen=True)
+class BoundedTextReadResult:
+    """Text plus bounded, JSON-safe retrieval metadata."""
+
+    outcome: BoundedTextReadOutcome
+    content: Optional[str] = None
+    source_size_bytes: Optional[int] = None
+    bytes_read: int = 0
+    max_bytes: int = BOUNDED_TEXT_SOURCE_MAX_BYTES
+    policy_class: Optional[str] = None
+    status_code: Optional[int] = None
+    error_type: Optional[str] = None
+
+    def to_meta(self) -> dict:
+        """Return metadata only; never include repository text."""
+        return {
+            "outcome": self.outcome.value,
+            "source_size_bytes": self.source_size_bytes,
+            "bytes_read": self.bytes_read,
+            "max_bytes": self.max_bytes,
+            "policy_class": self.policy_class,
+            "status_code": self.status_code,
+            "error_type": self.error_type,
+        }
+
+
+def _normalized_repo_path(file_path: str) -> str:
+    return "/" + str(file_path or "").replace("\\", "/").lstrip("/")
+
+
+def _bounded_text_policy_class(file_path: str) -> Optional[str]:
+    """Classify paths that the bounded API may not read by default."""
+    normalized = _normalized_repo_path(file_path)
+    lowered = normalized.casefold()
+    basename = lowered.rsplit("/", 1)[-1]
+
+    if (
+        basename == ".env"
+        or (basename.startswith(".env.") and basename not in {".env.example", ".env.sample"})
+        or basename in {"id_rsa", "id_ed25519", "credentials", "secrets.yml", "secrets.yaml"}
+        or any(part in lowered for part in ("/.git/", "/.aws/", "/.ssh/"))
+    ):
+        return "sensitive"
+
+    if (
+        basename.endswith(".lock")
+        or basename.endswith(".lock.json")
+        or basename in {
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "pnpm-lock.yaml",
+            "pnpm-lock.yml",
+            "yarn.lock",
+            "uv.lock",
+        }
+    ):
+        return BoundedTextReadOptIn.DEPENDENCY_LOCK.value
+
+    if (
+        lowered.startswith("/.github/workflows/")
+        or lowered.startswith("/.gitlab/ci/")
+        or lowered.startswith("/.circleci/")
+        or lowered.startswith("/.buildkite/")
+        or basename
+        in {
+            ".gitlab-ci.yml",
+            ".gitlab-ci.yaml",
+            ".travis.yml",
+            ".travis.yaml",
+            "azure-pipelines.yml",
+            "azure-pipelines.yaml",
+            "bitbucket-pipelines.yml",
+            "bitbucket-pipelines.yaml",
+            "jenkinsfile",
+        }
+    ):
+        return BoundedTextReadOptIn.CI_CONFIG.value
+
+    if any(
+        basename.endswith(suffix)
+        for suffix in (
+            ".exe", ".dll", ".so", ".dylib", ".bin", ".obj", ".o", ".a",
+            ".lib", ".jar", ".war", ".ear", ".class", ".apk", ".wasm",
+            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
+            ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv", ".webm",
+            ".ttf", ".otf", ".woff", ".woff2", ".zip", ".rar", ".7z",
+            ".tar", ".gz", ".bz2", ".xz", ".pkl", ".pickle", ".npy",
+            ".npz", ".h5", ".hdf5", ".pyc", ".pyo", ".min.js", ".min.css",
+            ".bundle.js", ".bundle.css", ".map", ".pbix", ".pbit", ".abf",
+        )
+    ):
+        return "binary_generated_or_minified"
+
+    if any(
+        segment in lowered
+        for segment in (
+            "/node_modules/", "/bower_components/", "/__pycache__/", "/.git/",
+            "/coverage/", "/.pytest_cache/", "/.tox/", "/venv/",
+            "/.virtualenv/", "/.cache/", "/.dart_tool/", "/.next/",
+            "/.nuxt/", "/.ipynb_checkpoints/",
+        )
+    ):
+        return "binary_generated_or_minified"
+    return None
 
 
 @dataclass(frozen=True)
@@ -114,6 +248,7 @@ class Repository:
 
         self._structure = None  # Singleton pattern for repository structure
         self._file_contents = {}  # Singleton pattern for file contents
+        self._bounded_text_reads = {}
         self._issues = {}  # Singleton pattern for file contents
         self._readme = None  # Singleton pattern for README content
         self._prs = {}  # Singleton pattern for PR content
@@ -603,6 +738,201 @@ class Repository:
 
         self.update_last_read_time()
         return self._file_contents.get(file_key)
+
+    def read_text_file_bounded(
+        self,
+        file_path: str,
+        sha: Optional[str] = None,
+        *,
+        opt_in: Optional[BoundedTextReadOptIn] = None,
+    ) -> BoundedTextReadResult:
+        """Read one UTF-8 file under a fixed 2 MiB source cap.
+
+        Dependency lockfiles and CI configuration require an exact, typed
+        ``opt_in``. Other binary, generated, minified, or sensitive paths stay
+        excluded even when an opt-in is supplied. The legacy
+        :meth:`get_file_content` contract and cache are intentionally separate.
+        """
+        requested_opt_in = None
+        if opt_in is not None:
+            requested_opt_in = BoundedTextReadOptIn(opt_in).value
+
+        policy_class = _bounded_text_policy_class(file_path)
+        allowed_exception = policy_class in {
+            BoundedTextReadOptIn.DEPENDENCY_LOCK.value,
+            BoundedTextReadOptIn.CI_CONFIG.value,
+        }
+        if (
+            (allowed_exception and requested_opt_in != policy_class)
+            or (policy_class is not None and not allowed_exception)
+            or (policy_class is None and requested_opt_in is not None)
+        ):
+            return BoundedTextReadResult(
+                outcome=BoundedTextReadOutcome.EXCLUDED_BY_POLICY,
+                policy_class=policy_class or "opt_in_path_mismatch",
+            )
+
+        cache_key = (str(file_path), sha, requested_opt_in)
+        cached = self._bounded_text_reads.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            repo = self.repo
+            if repo is None:
+                return BoundedTextReadResult(
+                    outcome=BoundedTextReadOutcome.ERROR,
+                    policy_class=policy_class,
+                    error_type="repository_unavailable",
+                )
+            file_content = (
+                repo.get_contents(file_path, ref=sha)
+                if sha is not None
+                else repo.get_contents(file_path)
+            )
+        except GithubException as exc:
+            status_code = getattr(exc, "status", None)
+            return BoundedTextReadResult(
+                outcome=(
+                    BoundedTextReadOutcome.NOT_FOUND
+                    if status_code == 404
+                    else BoundedTextReadOutcome.ERROR
+                ),
+                policy_class=policy_class,
+                status_code=status_code,
+                error_type=(
+                    "http_404"
+                    if status_code == 404
+                    else type(exc).__name__
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Bounded text read failed operation=get_contents error_type=%s",
+                type(exc).__name__,
+            )
+            return BoundedTextReadResult(
+                outcome=BoundedTextReadOutcome.ERROR,
+                policy_class=policy_class,
+                error_type=type(exc).__name__,
+            )
+
+        try:
+            is_directory = (
+                isinstance(file_content, list)
+                or getattr(file_content, "type", None) == "dir"
+            )
+            raw_size = getattr(file_content, "size", None)
+        except Exception as exc:
+            return BoundedTextReadResult(
+                outcome=BoundedTextReadOutcome.ERROR,
+                policy_class=policy_class,
+                error_type=type(exc).__name__,
+            )
+        if is_directory:
+            return BoundedTextReadResult(
+                outcome=BoundedTextReadOutcome.DIRECTORY,
+                policy_class=policy_class,
+            )
+
+        source_size = (
+            raw_size
+            if isinstance(raw_size, int) and not isinstance(raw_size, bool) and raw_size >= 0
+            else None
+        )
+        if source_size is not None and source_size > BOUNDED_TEXT_SOURCE_MAX_BYTES:
+            return BoundedTextReadResult(
+                outcome=BoundedTextReadOutcome.OVERSIZE,
+                source_size_bytes=source_size,
+                max_bytes=BOUNDED_TEXT_SOURCE_MAX_BYTES,
+                policy_class=policy_class,
+            )
+
+        try:
+            encoding = getattr(file_content, "encoding", None)
+            if encoding == "base64":
+                encoded = file_content.content
+                if not isinstance(encoded, str):
+                    raise ValueError("base64 content is not text")
+                raw_bytes = base64.b64decode(encoded)
+                bytes_read = len(raw_bytes)
+                status_code = 200
+            else:
+                raw_url = getattr(file_content, "url", None)
+                if not isinstance(raw_url, str) or not raw_url:
+                    raw_url = getattr(file_content, "download_url", None)
+                bounded_request = getattr(self._github, "_request_bounded_bytes", None)
+                if not isinstance(raw_url, str) or not raw_url or not callable(bounded_request):
+                    return BoundedTextReadResult(
+                        outcome=BoundedTextReadOutcome.ERROR,
+                        source_size_bytes=source_size,
+                        policy_class=policy_class,
+                        error_type="raw_transport_unavailable",
+                    )
+                response = bounded_request(
+                    raw_url,
+                    max_bytes=BOUNDED_TEXT_SOURCE_MAX_BYTES,
+                    operation="bounded_text_read",
+                )
+                if response.oversize:
+                    declared_size = response.declared_size_bytes
+                    return BoundedTextReadResult(
+                        outcome=BoundedTextReadOutcome.OVERSIZE,
+                        source_size_bytes=source_size or declared_size,
+                        bytes_read=response.bytes_read,
+                        policy_class=policy_class,
+                        status_code=response.status_code,
+                    )
+                if response.error_type is not None or response.data is None:
+                    return BoundedTextReadResult(
+                        outcome=(
+                            BoundedTextReadOutcome.NOT_FOUND
+                            if response.status_code == 404
+                            else BoundedTextReadOutcome.ERROR
+                        ),
+                        source_size_bytes=source_size,
+                        bytes_read=response.bytes_read,
+                        policy_class=policy_class,
+                        status_code=response.status_code,
+                        error_type=response.error_type or "empty_raw_response",
+                    )
+                raw_bytes = response.data
+                bytes_read = response.bytes_read
+                status_code = response.status_code
+                if source_size is None:
+                    source_size = response.declared_size_bytes
+
+            if len(raw_bytes) > BOUNDED_TEXT_SOURCE_MAX_BYTES:
+                return BoundedTextReadResult(
+                    outcome=BoundedTextReadOutcome.OVERSIZE,
+                    source_size_bytes=source_size or len(raw_bytes),
+                    bytes_read=len(raw_bytes),
+                    policy_class=policy_class,
+                    status_code=status_code,
+                )
+            if b"\x00" in raw_bytes:
+                raise UnicodeDecodeError("utf-8", raw_bytes, 0, 1, "NUL byte")
+            decoded = raw_bytes.decode("utf-8")
+        except (UnicodeDecodeError, ValueError, TypeError):
+            return BoundedTextReadResult(
+                outcome=BoundedTextReadOutcome.BINARY_OR_NON_UTF8,
+                source_size_bytes=source_size,
+                policy_class=policy_class,
+            )
+
+        result = BoundedTextReadResult(
+            outcome=BoundedTextReadOutcome.SUCCESS,
+            content=decoded,
+            source_size_bytes=source_size or len(raw_bytes),
+            bytes_read=bytes_read,
+            policy_class=policy_class,
+            status_code=status_code,
+        )
+        with self._file_contents_lock:
+            self._bounded_text_reads.setdefault(cache_key, result)
+            result = self._bounded_text_reads[cache_key]
+        self.update_last_read_time()
+        return result
 
 
     def get_issue_content(self, number, issue=None) -> str:
@@ -1338,6 +1668,7 @@ class Repository:
             self._structure = None  # Reset the repository structure cache
         with self._file_contents_lock:
             self._file_contents = {}  # Reset the file contents cache
+            self._bounded_text_reads = {}
         with self._issue_lock:
             self._issues = {}  # Reset the issue contents cache
         with self._readme_lock:
