@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Enforced the 2 MiB product cap both from GitHub size metadata and while streaming raw bytes
 - Kept binary, generated, minified, and sensitive paths outside the new opt-in surface
+- Raised the tested `setuptools` and `transformers` lower bounds to versions that clear the current dependency-audit security gate
 
 ## [0.4.1] - 2026-07-12
 

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77.0.3", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -36,7 +36,7 @@ dependencies = [
   "python-dateutil>=2.9,<3",
   "requests>=2.33,<3",
   "tokenizers>=0.22.1,<1",
-  "transformers>=5.3,<6",
+  "transformers>=5.5,<6",
   "urllib3>=2.7,<3",
 ]
 
