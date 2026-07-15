@@ -73,11 +73,15 @@ class TestRepository:
         ("path", "opt_in", "expected_policy"),
         [
             ("uv.lock", BoundedTextReadOptIn.DEPENDENCY_LOCK, "dependency_lock"),
+            ("go.sum", BoundedTextReadOptIn.DEPENDENCY_LOCK, "dependency_lock"),
+            ("gradle.lockfile", BoundedTextReadOptIn.DEPENDENCY_LOCK, "dependency_lock"),
+            ("packages.lock.json", BoundedTextReadOptIn.DEPENDENCY_LOCK, "dependency_lock"),
             (
                 ".github/workflows/test.yml",
                 BoundedTextReadOptIn.CI_CONFIG,
                 "ci_config",
             ),
+            ("appveyor.yml", BoundedTextReadOptIn.CI_CONFIG, "ci_config"),
         ],
     )
     def test_bounded_text_read_allows_only_exact_high_intent_opt_in(

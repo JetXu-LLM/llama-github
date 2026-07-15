@@ -32,6 +32,32 @@ __all__ = [
 DEFAULT_RELATED_ISSUE_MAX_HITS = 20
 BOUNDED_TEXT_SOURCE_MAX_BYTES = 2 * 1024 * 1024
 
+_DEPENDENCY_LOCK_BASENAMES = frozenset(
+    {
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "yarn.lock",
+        "bun.lock",
+        "bun.lockb",
+        "uv.lock",
+        "poetry.lock",
+        "pipfile.lock",
+        "go.sum",
+        "cargo.lock",
+        "gradle.lockfile",
+        "gemfile.lock",
+        "composer.lock",
+        "pubspec.lock",
+        "mix.lock",
+        "flake.lock",
+        "renv.lock",
+        "package.resolved",
+        "packages.lock.json",
+    }
+)
+
 
 class BoundedTextReadOutcome(str, Enum):
     """Truthful terminal outcome for one bounded repository text read."""
@@ -98,15 +124,11 @@ def _bounded_text_policy_class(file_path: str) -> Optional[str]:
 
     if (
         basename.endswith(".lock")
+        or basename.endswith(".lockfile")
         or basename.endswith(".lock.json")
-        or basename in {
-            "package-lock.json",
-            "npm-shrinkwrap.json",
-            "pnpm-lock.yaml",
-            "pnpm-lock.yml",
-            "yarn.lock",
-            "uv.lock",
-        }
+        or basename.endswith("-lock.json")
+        or basename.endswith("_lock.json")
+        or basename in _DEPENDENCY_LOCK_BASENAMES
     ):
         return BoundedTextReadOptIn.DEPENDENCY_LOCK.value
 
@@ -126,6 +148,8 @@ def _bounded_text_policy_class(file_path: str) -> Optional[str]:
             "bitbucket-pipelines.yml",
             "bitbucket-pipelines.yaml",
             "jenkinsfile",
+            "appveyor.yml",
+            "appveyor.yaml",
         }
     ):
         return BoundedTextReadOptIn.CI_CONFIG.value
