@@ -632,6 +632,166 @@ class TestRepository:
 
         assert issue_numbers == [77]
 
+    @pytest.mark.parametrize(
+        "description",
+        [
+            "See upstream/project#432 before merging.",
+            "Upstream issue: https://github.com/upstream/project/issues/432",
+            "[Upstream fix #432](https://github.com/upstream/project/pull/432)",
+            (
+                '<a href="https://redirect.github.com/upstream/project/pull/432">'
+                "#432</a>"
+            ),
+        ],
+    )
+    def test_related_issue_extraction_ignores_cross_repo_scoped_references(
+        self, mock_github_instance, mock_repo_object, description
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == []
+
+    def test_related_issue_extraction_keeps_local_ref_next_to_external_release_notes(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        description = (
+            "Fixes #77.\n"
+            "<details><summary>Upstream release notes</summary>\n"
+            "- [Improve parser (#431)](https://github.com/upstream/project/pull/431)\n"
+            '<a href="https://redirect.github.com/upstream/project/issues/432">'
+            "#432</a>\n"
+            "</details>\n"
+            "<details><summary>Upstream commits</summary>\n"
+            '<a href="https://github.com/upstream/project/commit/abc123">abc123</a> '
+            "Port PR 182675 to the release branch.\n"
+            "</details>\n"
+            + ("release detail " * 20)
+        )
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == [77]
+
+    def test_related_issue_extraction_keeps_refs_in_same_repo_details_block(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        description = (
+            "<details><summary>Local migration notes</summary>\n"
+            '<a href="https://github.com/owner/test-repo/blob/main/README.md">'
+            "migration guide</a>\n"
+            "Tracks #81.\n"
+            "</details>"
+        )
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == [81]
+
+    def test_related_issue_extraction_keeps_local_hash_ref_in_external_details(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        description = (
+            "<details><summary>Mixed maintainer notes</summary>\n"
+            '<a href="https://github.com/upstream/project/releases">'
+            "upstream release notes</a> mention issue 432.\n"
+            "Fixes #77 in this repository.\n"
+            "</details>"
+        )
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == [77]
+
+    def test_related_issue_extraction_scopes_short_unqualified_external_ref(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        description = (
+            '<details><a href="https://github.com/upstream/project/releases">'
+            "notes</a>: Fixes 432.</details> Fixes #77."
+        )
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == [77]
+
+    def test_related_issue_extraction_does_not_treat_app_link_as_repo_provenance(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        description = (
+            "<details><summary>Automation notes</summary>\n"
+            '<a href="https://github.com/apps/dependabot">Dependabot</a> '
+            "tracks #82.\n"
+            "</details>"
+        )
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == [82]
+
+    @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            ("owner/test-repo#41", [41]),
+            (
+                "[Local issue](https://github.com/owner/test-repo/issues/42)",
+                [42],
+            ),
+            (
+                '<a href="https://github.com/OWNER/TEST-REPO/pull/43">#43</a>',
+                [43],
+            ),
+            ("https://github.com/owner/test-repo/issues/44", [44]),
+        ],
+    )
+    def test_related_issue_extraction_keeps_same_repo_scoped_references(
+        self, mock_github_instance, mock_repo_object, description, expected
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": description}}
+        )
+
+        assert issue_numbers == expected
+
+    def test_related_issue_extraction_keeps_plain_same_repo_shorthand(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        issue_numbers = repo.extract_related_issues(
+            {"pr_metadata": {"description": "Fixes #5 and relates to #2"}}
+        )
+
+        assert issue_numbers == [2, 5]
+
     def test_related_issue_collection_expands_all_references_under_limit(
         self, mock_github_instance, mock_repo_object
     ):

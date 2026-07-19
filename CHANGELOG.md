@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-07-19
+
+### Fixed
+- Bound explicit GitHub issue and pull-request references to their named repository before applying same-repository `#123` shorthand matching
+- Prevented external Markdown/HTML links and unqualified issue phrases in repository-scoped embedded release-note blocks, including Dependabot-generated notes, from being expanded as unrelated local issues
+
 ## [0.4.3] - 2026-07-15
 
 ### Fixed
@@ -198,6 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration with LLM for processing and generating responses
 
 [0.1.4]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.3...v0.1.4
+[0.4.4]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.0...v0.4.1

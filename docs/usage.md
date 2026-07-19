@@ -102,7 +102,12 @@ This method is useful when you want structured PR metadata, changed files,
 interactions, and related issue context in one object. Related issues come only from
 the PR title/body and top-level PR comments. Review summaries and inline review
 comments remain separate interaction records, so callers do not lose multiple inline
-comments attached to one review.
+comments attached to one review. Plain `#123` is interpreted as a same-repository
+reference, while explicit GitHub links and `owner/repository#123` references retain
+their repository identity. Upstream release-note links are therefore not fetched from
+the repository being reviewed; repository-pure upstream content embedded in bounded
+HTML `details` blocks gives upstream scope only to unqualified `PR 123` / `issue 123`
+phrases. Explicit `#123` shorthand remains local.
 
 `_retrieval_meta` records bounded-fetch outcomes. A `partial` or `error` result is an
 unknown, not evidence that a file, comment, or match does not exist.

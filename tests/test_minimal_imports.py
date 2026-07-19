@@ -22,7 +22,7 @@ def test_retrieval_imports_do_not_load_heavy_rag_dependencies():
         assert callable(Repository.get_ci_status_with_status)
         assert callable(Repository.read_text_file_bounded)
         assert BoundedTextReadResult.__name__ == "BoundedTextReadResult"
-        assert llama_github.__version__ == "0.4.3"
+        assert llama_github.__version__ == "0.4.4"
         """
     )
 

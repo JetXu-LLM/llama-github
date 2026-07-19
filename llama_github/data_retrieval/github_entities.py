@@ -32,6 +32,56 @@ __all__ = [
 DEFAULT_RELATED_ISSUE_MAX_HITS = 20
 BOUNDED_TEXT_SOURCE_MAX_BYTES = 2 * 1024 * 1024
 
+_GITHUB_REPO_COMPONENT = r"[A-Za-z0-9_.-]+"
+_GITHUB_REPOSITORY = rf"{_GITHUB_REPO_COMPONENT}/{_GITHUB_REPO_COMPONENT}"
+_GITHUB_ISSUE_OR_PULL_TARGET = (
+    rf"https?://(?:www\.)?(?:github\.com|redirect\.github\.com)/"
+    rf"(?P<repo>{_GITHUB_REPOSITORY})/(?:issues|pull)/"
+    rf"(?P<number>\d+)"
+)
+_GITHUB_REPOSITORY_CONTENT_TARGET = re.compile(
+    rf"https?://(?:www\.)?(?:github\.com|redirect\.github\.com)/"
+    rf"(?P<repo>{_GITHUB_REPOSITORY})/"
+    rf"(?:blob|commit|compare|discussions|issues|pull|releases|tree)"
+    rf"(?=$|[/?#\s)>\]}}'\"])",
+    re.IGNORECASE,
+)
+_HTML_DETAILS_BLOCK = re.compile(
+    r"<details\b[^>]{0,2048}>[\s\S]{0,100000}?</details\s*>",
+    re.IGNORECASE,
+)
+_UNQUALIFIED_ISSUE_REFERENCE = re.compile(
+    r"\b(?:address|addresses|addressing|bugs?|close|closes|closed|fix|fixes|"
+    r"fixed|issues?|prs?|pull\s+requests?|references?|relate|relates|related|"
+    r"resolve|resolves|resolved|see|tasks?|tickets?|todos?)"
+    r"\s*:?\s+(?P<number>\d{1,6})\b",
+    re.IGNORECASE,
+)
+_MARKDOWN_GITHUB_REFERENCE = re.compile(
+    rf"\[[^\]\r\n]{{0,1000}}\]\(\s*<?"
+    rf"{_GITHUB_ISSUE_OR_PULL_TARGET}[^\s)>]*>?"
+    rf"(?:\s+['\"][^)\r\n]{{0,500}}['\"])?\s*\)",
+    re.IGNORECASE,
+)
+_HTML_GITHUB_REFERENCE = re.compile(
+    rf"<a\b[^>]{{0,2048}}\bhref\s*=\s*(?P<quote>['\"])"
+    rf"{_GITHUB_ISSUE_OR_PULL_TARGET}[^\s'\"]*(?P=quote)"
+    rf"[^>]{{0,2048}}>[\s\S]{{0,4096}}?</a\s*>",
+    re.IGNORECASE,
+)
+_PLAIN_GITHUB_REFERENCE = re.compile(
+    rf"(?<![\w.-])(?:https?://)?(?:www\.)?"
+    rf"(?:github\.com|redirect\.github\.com)/"
+    rf"(?P<repo>{_GITHUB_REPOSITORY})/(?:issues|pull)/"
+    rf"(?P<number>\d+)[^\s)>\]}}'\"]*",
+    re.IGNORECASE,
+)
+_QUALIFIED_GITHUB_REFERENCE = re.compile(
+    rf"(?<![\w./-])(?P<repo>{_GITHUB_REPOSITORY})#"
+    rf"(?P<number>\d+)(?!\d)",
+    re.IGNORECASE,
+)
+
 _DEPENDENCY_LOCK_BASENAMES = frozenset(
     {
         "package-lock.json",
@@ -1138,7 +1188,11 @@ class Repository:
         """
         Extracts related issue numbers from PR-authored conversation fields.
 
-        Uses different matching strategies:
+        Repository-qualified references are resolved before shorthand matching,
+        so a Markdown or HTML link to another repository cannot leak its display
+        label (for example ``#123``) into this repository's issue expansion.
+
+        Uses different shorthand matching strategies:
         - Short descriptions (<200 chars): Aggressive patterns for simple references
         - Long descriptions (>=200 chars): Strict patterns to avoid false positives
 
@@ -1170,6 +1224,57 @@ class Repository:
 
         issues = set()
 
+        def valid_issue_number(raw_number: str) -> Optional[int]:
+            """Validate a reference without changing the historical six-digit cap."""
+            if not raw_number.isdigit() or len(raw_number) > 6:
+                return None
+            issue_number = int(raw_number)
+            return issue_number if issue_number > 0 else None
+
+        def consume_scoped_references(text: str) -> str:
+            """Record same-repo targets and hide all scoped targets from bare matching."""
+            current_repo = (self.full_name or "").casefold()
+
+            def narrow_external_block(match: re.Match) -> str:
+                repositories = {
+                    repository.group("repo").casefold()
+                    for repository in _GITHUB_REPOSITORY_CONTENT_TARGET.finditer(
+                        match.group(0)
+                    )
+                }
+                if repositories and current_repo not in repositories:
+                    return _UNQUALIFIED_ISSUE_REFERENCE.sub(
+                        lambda reference: " " * len(reference.group(0)),
+                        match.group(0),
+                    )
+                return match.group(0)
+
+            def consume(match: re.Match) -> str:
+                referenced_repo = match.group("repo").casefold()
+                issue_number = valid_issue_number(match.group("number"))
+                if referenced_repo == current_repo and issue_number is not None:
+                    issues.add(issue_number)
+                # Preserve surrounding boundaries while preventing link labels or
+                # qualified external references from being re-read as local #N.
+                return " " * (match.end() - match.start())
+
+            # Generated release notes often embed an upstream document inside a
+            # details block. When every explicit GitHub repository-content link in
+            # that bounded block points away from the current repository, only its
+            # unqualified "PR 123" / "issue 123" phrases inherit upstream
+            # provenance. Explicit #123 shorthand remains local; scoped links and
+            # owner/repo#123 references are adjudicated separately below. Profile
+            # and GitHub App links do not establish repository provenance.
+            scoped_text = _HTML_DETAILS_BLOCK.sub(narrow_external_block, text)
+            for pattern in (
+                _MARKDOWN_GITHUB_REFERENCE,
+                _HTML_GITHUB_REFERENCE,
+                _PLAIN_GITHUB_REFERENCE,
+                _QUALIFIED_GITHUB_REFERENCE,
+            ):
+                scoped_text = pattern.sub(consume, scoped_text)
+            return scoped_text
+
         def get_description_length(data: Dict[str, Any]) -> int:
             """Get the length of PR description for strategy selection"""
             try:
@@ -1182,26 +1287,25 @@ class Repository:
             """Aggressive patterns for short, focused descriptions"""
             if not isinstance(text, str):
                 return
-                
+
+            text = consume_scoped_references(text)
             patterns = [
                 # Simple #123 reference (most common in short descriptions)
                 r'#(\d+)(?!\d)',
-                
-                # Full GitHub URLs
-                rf'(?:https?://)?github\.com/{re.escape(self.full_name)}/(?:issues|pull)/(\d+)',
-                
+
                 # Closing keywords with flexible spacing
                 fr'(?:{"|".join(closing_keywords)})\s*:?\s*#?(\d+)(?!\d)',
-                
+
                 # Action words commonly used in short descriptions
                 r'(?:addresses?|references?|relates?\s+to|see)\s+#?(\d+)(?!\d)',
             ]
-            
+
             for pattern in patterns:
                 matches = re.findall(pattern, text, re.IGNORECASE)
                 valid_matches = [
-                    int(match) for match in matches 
-                    if match.isdigit() and len(match) <= 6 and int(match) > 0
+                    issue_number
+                    for match in matches
+                    if (issue_number := valid_issue_number(match)) is not None
                 ]
                 issues.update(valid_matches)
 
@@ -1209,30 +1313,26 @@ class Repository:
             """Strict patterns for long descriptions to avoid false positives"""
             if not isinstance(text, str):
                 return
-                
+
+            text = consume_scoped_references(text)
             patterns = [
                 # GitHub's unambiguous same-repository shorthand. Markdown
                 # headings use a space after '#', so they do not match.
                 r'(?<![\w/])#(\d{1,6})\b',
 
-                # Full GitHub URLs (always reliable)
-                rf'(?:https?://)?github\.com/{re.escape(self.full_name)}/(?:issues|pull)/(\d+)',
-                
                 # Closing keywords with word boundaries
                 fr'\b(?:{"|".join(closing_keywords)})\s*:?\s*#(\d+)\b',
-                
-                # Explicit issue references with word boundaries  
+
+                # Explicit issue references with word boundaries
                 r'\b(?:issue|bug|ticket|pr|pull\s+request)\s*:?\s*#?(\d+)\b',
-                
-                # Cross-repo references
-                rf'\b{re.escape(self.full_name)}#(\d+)\b',
             ]
-            
+
             for pattern in patterns:
                 matches = re.findall(pattern, text, re.IGNORECASE)
                 valid_matches = [
-                    int(match) for match in matches 
-                    if match.isdigit() and len(match) <= 6 and int(match) > 0
+                    issue_number
+                    for match in matches
+                    if (issue_number := valid_issue_number(match)) is not None
                 ]
                 issues.update(valid_matches)
 

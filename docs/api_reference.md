@@ -113,7 +113,15 @@ packaged `related_issue_max_hits` configuration supplies the default. The
 number is excluded before applying the cap. Discovery reads only the PR title/body and
 top-level PR comment bodies. It deliberately ignores file diffs, branch names, SHAs,
 CI output, and other nested strings so code-shaped `#123` text is not treated as a
-linked issue.
+linked issue. Plain `#123` remains same-repository shorthand. Explicit GitHub issue or
+pull-request URLs, Markdown/HTML links, and `owner/repository#123` references are first
+bound to their named repository; references naming another repository are not expanded
+through the current `Repository` object. A bounded HTML `details` block whose GitHub
+repository-content links all point outside the current repository is likewise treated
+as embedded upstream content for unqualified `PR 123` / `issue 123` phrases; explicit
+`#123` shorthand remains local. Profile and GitHub App links do not establish that
+provenance. This prevents upstream release notes and commit summaries from silently
+becoming local issue context without hiding an explicit local shorthand.
 
 `interactions` stores top-level PR comments, review summaries, and each inline review
 comment as separate chronological records. `reviews` and `review_comments` have
