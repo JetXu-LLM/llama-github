@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-07-20
+
+### Added
+- Added optional per-file and cumulative source limits to `get_pr_content()` for memory-bounded consumers while preserving the historical unbounded default and a separate cache identity
+- Added an optional caller-owned source limit to `get_file_content()`, including size-before-decode checks and locally capped raw-response streaming
+- Added content-free PR retrieval metadata for retained reads, budget exhaustion, API-patch fallback, and missing-patch fallback
+
+### Fixed
+- Prevented large changed-file base/head content from being materialized or accumulated before callers can apply their own memory boundary
+- Reused GitHub's changed-file patch when bounded source is unavailable instead of treating the file as analyzable full source
+
 ## [0.4.4] - 2026-07-19
 
 ### Fixed
@@ -204,6 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration with LLM for processing and generating responses
 
 [0.1.4]: https://github.com/JetXu-LLM/llama-github/compare/v0.1.3...v0.1.4
+[0.4.5]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/JetXu-LLM/llama-github/compare/v0.4.1...v0.4.2

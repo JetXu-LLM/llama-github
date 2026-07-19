@@ -14,6 +14,7 @@ from llama_github.github_integration.github_auth_manager import (
 import re
 from dateutil import parser
 import base64
+import binascii
 import requests
 
 from llama_github.config.config import config
@@ -31,6 +32,47 @@ __all__ = [
 
 DEFAULT_RELATED_ISSUE_MAX_HITS = 20
 BOUNDED_TEXT_SOURCE_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _utf8_text_exceeds_limit(value: str, limit: int) -> bool:
+    """Check a UTF-8 byte cap without copying an obviously oversized string."""
+    if len(value) > limit:
+        return True
+    return len(value.encode("utf-8")) > limit
+
+
+def _base64_payload_may_exceed_limit(value: Any, limit: int) -> bool:
+    """Reject base64 payloads whose decoded size cannot fit under ``limit``.
+
+    GitHub normally reports the decoded object size. This conservative bound
+    protects capped callers when that metadata is absent or inaccurate, before
+    allocating the decoded bytes. Whitespace is ignored because GitHub may wrap
+    base64 content across lines.
+    """
+    if isinstance(value, str):
+        symbols = (char for char in value if not char.isspace())
+        padding_symbol = "="
+    elif isinstance(value, (bytes, bytearray)):
+        symbols = (byte for byte in value if byte not in b" \t\r\n")
+        padding_symbol = ord("=")
+    else:
+        return False
+
+    symbol_count = 0
+    tail: list[Any] = []
+    for symbol in symbols:
+        symbol_count += 1
+        tail.append(symbol)
+        if len(tail) > 2:
+            tail.pop(0)
+    if symbol_count % 4 == 0:
+        padding = sum(symbol == padding_symbol for symbol in tail)
+        decoded_size = (symbol_count // 4) * 3 - padding
+        return decoded_size > limit
+    # A malformed or unpadded payload is left to the decoder. This coarser
+    # bound remains safe: it can miss an early rejection but cannot reject a
+    # value that would fit under the caller's cap.
+    return symbol_count > 4 * ((limit + 2) // 3)
 
 _GITHUB_REPO_COMPONENT = r"[A-Za-z0-9_.-]+"
 _GITHUB_REPOSITORY = rf"{_GITHUB_REPO_COMPONENT}/{_GITHUB_REPO_COMPONENT}"
@@ -617,7 +659,13 @@ class Repository:
         self.update_last_read_time()
         return self._structure
     
-    def get_file_content(self, file_path: str, sha: Optional[str] = None) -> Optional[str]:
+    def get_file_content(
+        self,
+        file_path: str,
+        sha: Optional[str] = None,
+        *,
+        max_source_bytes: Optional[int] = None,
+    ) -> Optional[str]:
         """
         Retrieves the content of a file using a singleton design pattern with improved encoding handling.
 
@@ -626,8 +674,18 @@ class Repository:
 
         :param file_path: The path to the file in the repository.
         :param sha: The commit SHA. If None, the latest version is fetched.
-        :return: The file content as a string or None if not found or on error.
+        :param max_source_bytes: Optional caller-owned source cap. The legacy
+            default remains unbounded; bounded callers fail closed before raw
+            download/decoding whenever GitHub declares a larger object.
+        :return: The file content as a string or None if excluded, oversized,
+            not found, undecodable, or unavailable.
         """
+        if max_source_bytes is not None and (
+            isinstance(max_source_bytes, bool)
+            or not isinstance(max_source_bytes, int)
+            or max_source_bytes <= 0
+        ):
+            raise ValueError("max_source_bytes must be a positive integer")
         file_key = f"{file_path}/{sha}" if sha is not None else file_path
 
         # Skip files that don't need processing
@@ -756,6 +814,17 @@ class Repository:
             logger.debug("Skipping non-processable file")
             return None
 
+        cached_content = self._file_contents.get(file_key)
+        if cached_content is not None:
+            if (
+                max_source_bytes is not None
+                and _utf8_text_exceeds_limit(cached_content, max_source_bytes)
+            ):
+                logger.info("File-content retrieval skipped outcome=oversize")
+                return None
+            self.update_last_read_time()
+            return cached_content
+
         if file_key not in self._file_contents:  # Check if file content has already been fetched
             with self._file_contents_lock:  # Locking for thread-safe write action
                 if file_key not in self._file_contents:  # Double-check after acquiring the lock
@@ -773,20 +842,93 @@ class Repository:
                             logger.debug("Skipping directory path")
                             return None
 
+                        source_size = getattr(file_content, "size", None)
+                        if (
+                            max_source_bytes is not None
+                            and isinstance(source_size, int)
+                            and not isinstance(source_size, bool)
+                            and source_size > max_source_bytes
+                        ):
+                            logger.info("File-content retrieval skipped outcome=oversize")
+                            return None
+
                         # Improved encoding handling
                         if file_content.encoding == 'base64':
-                            decoded_content = base64.b64decode(file_content.content).decode('utf-8')
+                            if (
+                                max_source_bytes is not None
+                                and _base64_payload_may_exceed_limit(
+                                    file_content.content,
+                                    max_source_bytes,
+                                )
+                            ):
+                                logger.info(
+                                    "File-content retrieval skipped outcome=oversize"
+                                )
+                                return None
+                            decoded_content = base64.b64decode(
+                                file_content.content
+                            ).decode('utf-8')
                         elif (file_content.encoding is None or file_content.encoding == 'none') and hasattr(file_content, 'download_url') and file_content.download_url:
                             try:
                                 logger.debug("Downloading raw file content")
-                                # Use requests to download the file content
-                                response = requests.get(
-                                    file_content.download_url,
-                                    timeout=(5, 30),
-                                    headers={'Accept': 'application/vnd.github.v3.raw'}
-                                )
-                                response.raise_for_status()
-                                decoded_content = response.text
+                                request_kwargs = {
+                                    "timeout": (5, 30),
+                                    "headers": {
+                                        "Accept": "application/vnd.github.v3.raw"
+                                    },
+                                }
+                                if max_source_bytes is None:
+                                    # Preserve the historical public behavior
+                                    # for callers that did not opt into a cap.
+                                    response = requests.get(
+                                        file_content.download_url,
+                                        **request_kwargs,
+                                    )
+                                    response.raise_for_status()
+                                    decoded_content = response.text
+                                else:
+                                    # A GitHub content object can omit a useful
+                                    # size while still providing a raw URL. Do
+                                    # not materialize that response before the
+                                    # caller-owned cap has been enforced.
+                                    response = requests.get(
+                                        file_content.download_url,
+                                        stream=True,
+                                        **request_kwargs,
+                                    )
+                                    try:
+                                        response.raise_for_status()
+                                        declared_length = response.headers.get(
+                                            "Content-Length"
+                                        )
+                                        try:
+                                            declared_length = int(declared_length)
+                                        except (TypeError, ValueError):
+                                            declared_length = None
+                                        if (
+                                            declared_length is not None
+                                            and declared_length > max_source_bytes
+                                        ):
+                                            logger.info(
+                                                "File-content retrieval skipped outcome=oversize"
+                                            )
+                                            return None
+
+                                        raw_content = bytearray()
+                                        for chunk in response.iter_content(
+                                            chunk_size=min(65536, max_source_bytes + 1)
+                                        ):
+                                            if not chunk:
+                                                continue
+                                            raw_content.extend(chunk)
+                                            if len(raw_content) > max_source_bytes:
+                                                logger.info(
+                                                    "File-content retrieval skipped outcome=oversize"
+                                                )
+                                                return None
+                                        decoded_content = bytes(raw_content).decode("utf-8")
+                                    finally:
+                                        response.close()
                             except requests.RequestException as e:
                                 logger.error(
                                     "Raw file download failed error_type=%s",
@@ -795,6 +937,16 @@ class Repository:
                                 return None
                         else:
                             decoded_content = file_content.decoded_content.decode('utf-8')
+
+                        if (
+                            max_source_bytes is not None
+                            and _utf8_text_exceeds_limit(
+                                decoded_content,
+                                max_source_bytes,
+                            )
+                        ):
+                            logger.info("File-content retrieval skipped outcome=oversize")
+                            return None
                         
                         self._file_contents[file_key] = decoded_content
                     except GithubException as e:
@@ -809,9 +961,25 @@ class Repository:
                             type(e).__name__,
                         )
                         return None
+                    except (binascii.Error, ValueError) as e:
+                        logger.error(
+                            "File-content base64 decode failed error_type=%s",
+                            type(e).__name__,
+                        )
+                        return None
 
+        cached_content = self._file_contents.get(file_key)
+        if (
+            cached_content is not None
+            and max_source_bytes is not None
+            and _utf8_text_exceeds_limit(cached_content, max_source_bytes)
+        ):
+            # Another thread may have populated the shared cache while this
+            # caller waited for the lock. The caller's cap remains authoritative.
+            logger.info("File-content retrieval skipped outcome=oversize")
+            return None
         self.update_last_read_time()
-        return self._file_contents.get(file_key)
+        return cached_content
 
     def read_text_file_bounded(
         self,
@@ -1444,6 +1612,8 @@ class Repository:
         force_update=False,
         *,
         related_issue_max_hits=None,
+        source_file_max_bytes: Optional[int] = None,
+        source_total_max_bytes: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Retrieves and processes the content of a pull request.
@@ -1452,11 +1622,33 @@ class Repository:
         :param pr: Optional PR object.
         :param context_lines: Number of context lines for diffs.
         :param related_issue_max_hits: Maximum related issues to expand.
+        :param source_file_max_bytes: Optional cap for any base/head file read.
+            Omitted by default to preserve the historical public behavior.
+        :param source_total_max_bytes: Optional cumulative cap for retained
+            base/head source. Requires ``source_file_max_bytes`` and is also
+            opt-in so existing callers remain backward compatible.
         :return: A dictionary containing detailed PR information.
         """
-        if number not in self._prs or force_update:  # Check if issue has already been fetched
+        for name, value in (
+            ("source_file_max_bytes", source_file_max_bytes),
+            ("source_total_max_bytes", source_total_max_bytes),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive integer")
+        if source_total_max_bytes is not None and source_file_max_bytes is None:
+            raise ValueError(
+                "source_total_max_bytes requires source_file_max_bytes"
+            )
+        pr_cache_key = (
+            number
+            if source_file_max_bytes is None
+            else (number, source_file_max_bytes, source_total_max_bytes)
+        )
+        if pr_cache_key not in self._prs or force_update:  # Check if issue has already been fetched
             with self._pr_lock:  # Locking for write action
-                if number not in self._prs or force_update:  # Check if issue has already been fetched after get lock
+                if pr_cache_key not in self._prs or force_update:  # Check if issue has already been fetched after get lock
                     try:
                         logger.debug(f"Processing PR #{number}")
                         if pr is None:
@@ -1680,10 +1872,67 @@ class Repository:
                             pr_data["commits"] = []
                             pr_data["commit_stats"] = {}
 
-                        # Process file changes
+                        # Process file changes. Bounded callers retain custom
+                        # context for small files, but never let changed-file
+                        # source accumulate without a caller-owned ceiling.
+                        # When a bounded read is unavailable, the already
+                        # fetched PR-files patch remains the truthful fallback;
+                        # no extra full-file download is introduced.
                         comparison = None
                         dependency_files = ['requirements.txt', 'Pipfile', 'Pipfile.lock', 'setup.py']
                         config_files = ['.env', 'settings.py', 'config.yaml', 'config.yml', 'config.json']
+                        source_budget_enabled = source_file_max_bytes is not None
+                        source_bytes_remaining = source_total_max_bytes
+                        source_budget_meta = {
+                            "mode": "bounded" if source_budget_enabled else "legacy_unbounded",
+                            "file_max_bytes": source_file_max_bytes,
+                            "total_max_bytes": source_total_max_bytes,
+                            "attempted_reads": 0,
+                            "retained_reads": 0,
+                            "retained_source_bytes": 0,
+                            "unavailable_or_oversize_reads": 0,
+                            "budget_exhausted_reads": 0,
+                            "api_patch_fallbacks": 0,
+                            "missing_patch_fallbacks": 0,
+                        }
+
+                        def read_source_file(path: str, revision: str) -> Optional[str]:
+                            nonlocal source_bytes_remaining
+                            source_budget_meta["attempted_reads"] += 1
+                            if source_bytes_remaining is not None and source_bytes_remaining <= 0:
+                                source_budget_meta["budget_exhausted_reads"] += 1
+                                return None
+                            read_cap = source_file_max_bytes
+                            if source_bytes_remaining is not None:
+                                read_cap = min(read_cap, source_bytes_remaining)
+                            content = self.get_file_content(
+                                file_path=path,
+                                sha=revision,
+                                max_source_bytes=read_cap,
+                            )
+                            if content is None:
+                                source_budget_meta["unavailable_or_oversize_reads"] += 1
+                                return None
+                            retained_bytes = len(content.encode("utf-8"))
+                            source_budget_meta["retained_reads"] += 1
+                            source_budget_meta["retained_source_bytes"] += retained_bytes
+                            if source_bytes_remaining is not None:
+                                source_bytes_remaining -= retained_bytes
+                            return content
+
+                        def read_source_file_legacy(
+                            path: str, revision: str
+                        ) -> Optional[str]:
+                            return self.get_file_content(
+                                file_path=path,
+                                sha=revision,
+                            )
+
+                        source_reader = (
+                            read_source_file
+                            if source_budget_enabled
+                            else read_source_file_legacy
+                        )
                         for file in pr_files:
                             file_path = file['filename']
                             change_type = file['status']
@@ -1694,17 +1943,37 @@ class Repository:
 
                             # Fetch file content for base and head versions
                             if change_type == 'removed':
-                                base_content = self.get_file_content(file_path=file_path, sha=pr.base.sha)
+                                base_content = source_reader(file_path, pr.base.sha)
                                 head_content = None
                             elif change_type == 'added':
                                 base_content = None
-                                head_content = self.get_file_content(file_path=file_path, sha=pr.head.sha)
+                                head_content = source_reader(file_path, pr.head.sha)
                             else:
-                                base_content = self.get_file_content(file_path=file_path, sha=pr.base.sha)
-                                head_content = self.get_file_content(file_path=file_path, sha=pr.head.sha)
+                                base_content = source_reader(file_path, pr.base.sha)
+                                head_content = source_reader(file_path, pr.head.sha)
 
                             # Generate custom diff with specified context lines
-                            if base_content is None and head_content is None:
+                            expected_content_available = (
+                                (change_type == 'removed' and base_content is not None)
+                                or (change_type == 'added' and head_content is not None)
+                                or (
+                                    change_type not in {'removed', 'added'}
+                                    and base_content is not None
+                                    and head_content is not None
+                                )
+                            )
+                            api_patch = file.get("patch")
+                            if source_budget_enabled and not expected_content_available:
+                                if isinstance(api_patch, str) and api_patch.strip():
+                                    custom_diff = api_patch
+                                    source_budget_meta["api_patch_fallbacks"] += 1
+                                else:
+                                    custom_diff = (
+                                        "[SKIPPED] Bounded source unavailable and GitHub "
+                                        "did not provide a patch"
+                                    )
+                                    source_budget_meta["missing_patch_fallbacks"] += 1
+                            elif base_content is None and head_content is None:
                                 custom_diff = '[SKIPPED] File type not suitable for diff analysis'
                             else:
                                 custom_diff = DiffGenerator.generate_custom_diff(base_content, head_content, context_lines)
@@ -1764,7 +2033,18 @@ class Repository:
                             pr_data['file_changes'].append(file_change)
                             logger.debug("Processed PR file")
 
-                        self._prs[number] = pr_data
+                        if source_budget_enabled:
+                            source_budget_meta["outcome"] = (
+                                "partial"
+                                if source_budget_meta["unavailable_or_oversize_reads"]
+                                or source_budget_meta["budget_exhausted_reads"]
+                                else "complete"
+                            )
+                            pr_data["_retrieval_meta"]["file_content_budget"] = (
+                                source_budget_meta
+                            )
+
+                        self._prs[pr_cache_key] = pr_data
                         logger.debug("Collected details for PR #%s", number)
                     except Exception as e:
                         logger.error(
@@ -1773,7 +2053,7 @@ class Repository:
                             type(e).__name__,
                         )
         self.update_last_read_time()
-        return self._prs.get(number)
+        return self._prs.get(pr_cache_key)
 
     def __str__(self):
         """

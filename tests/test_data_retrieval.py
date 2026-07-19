@@ -56,6 +56,206 @@ class TestRepository:
 
         assert content == 'print("hello")'
 
+    def test_get_file_content_cap_rejects_declared_oversize_before_decode_or_download(
+        self, mock_github_instance, mock_repo_object
+    ):
+        class OversizeContent:
+            size = 129
+
+            @property
+            def encoding(self):
+                raise AssertionError("oversize content must not be decoded")
+
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = OversizeContent()
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("results/large.json", max_source_bytes=128) is None
+        mock_repo_object.get_contents.assert_called_once_with("results/large.json")
+
+    def test_get_file_content_cap_applies_to_preexisting_cache(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo._file_contents["src/large.txt/head"] = "x" * 129
+
+        assert (
+            repo.get_file_content("src/large.txt", sha="head", max_source_bytes=128)
+            is None
+        )
+        mock_repo_object.get_contents.assert_not_called()
+
+    def test_get_file_content_cap_rejects_obviously_large_cache_without_encoding(
+        self, mock_github_instance, mock_repo_object
+    ):
+        class EncodeMustNotRun(str):
+            def encode(self, *args, **kwargs):
+                raise AssertionError("obviously oversized text must not be copied")
+
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo._file_contents["src/large.txt/head"] = EncodeMustNotRun("x" * 129)
+
+        assert (
+            repo.get_file_content("src/large.txt", sha="head", max_source_bytes=128)
+            is None
+        )
+        mock_repo_object.get_contents.assert_not_called()
+
+    def test_get_file_content_cap_counts_utf8_bytes_for_cached_text(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo._file_contents["src/multibyte.txt/head"] = "ééé"
+
+        assert (
+            repo.get_file_content(
+                "src/multibyte.txt",
+                sha="head",
+                max_source_bytes=5,
+            )
+            is None
+        )
+        mock_repo_object.get_contents.assert_not_called()
+
+    @patch("llama_github.data_retrieval.github_entities.base64.b64decode")
+    def test_get_file_content_cap_rejects_large_base64_before_decode(
+        self, mock_decode, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding="base64",
+            content=base64.b64encode(b"x" * 129).decode("ascii"),
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("src/large.txt", max_source_bytes=128) is None
+        mock_decode.assert_not_called()
+        assert "src/large.txt" not in repo._file_contents
+
+    def test_get_file_content_cap_accepts_base64_at_exact_boundary(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding="base64",
+            content=base64.b64encode(b"x" * 128).decode("ascii"),
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content(
+            "src/exact.txt", max_source_bytes=128
+        ) == "x" * 128
+
+    def test_get_file_content_non_ascii_base64_fails_closed(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding="base64",
+            content="éééé",
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("src/broken.txt", max_source_bytes=128) is None
+        assert "src/broken.txt" not in repo._file_contents
+
+    def test_get_file_content_malformed_base64_fails_closed(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding="base64",
+            content="abc",
+        )
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("src/broken.txt", max_source_bytes=128) is None
+        assert "src/broken.txt" not in repo._file_contents
+
+    @patch("llama_github.data_retrieval.github_entities.requests.get")
+    def test_get_file_content_cap_rejects_raw_content_length_before_streaming(
+        self, mock_get, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding=None,
+            download_url="https://example.invalid/raw",
+        )
+        response = MagicMock()
+        response.headers = {"Content-Length": "129"}
+        mock_get.return_value = response
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("src/large.txt", max_source_bytes=128) is None
+        mock_get.assert_called_once_with(
+            "https://example.invalid/raw",
+            stream=True,
+            timeout=(5, 30),
+            headers={"Accept": "application/vnd.github.v3.raw"},
+        )
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once_with()
+
+    @patch("llama_github.data_retrieval.github_entities.requests.get")
+    def test_get_file_content_cap_stops_raw_stream_at_local_boundary(
+        self, mock_get, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding="none",
+            download_url="https://example.invalid/raw",
+        )
+        response = MagicMock()
+        response.headers = {}
+        response.iter_content.return_value = iter([b"a" * 64, b"b" * 65])
+        mock_get.return_value = response
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("src/large.txt", max_source_bytes=128) is None
+        response.iter_content.assert_called_once_with(chunk_size=129)
+        response.close.assert_called_once_with()
+        assert "src/large.txt" not in repo._file_contents
+
+    @patch("llama_github.data_retrieval.github_entities.requests.get")
+    def test_get_file_content_cap_caches_utf8_raw_stream_within_boundary(
+        self, mock_get, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_repo_object.get_contents.return_value = SimpleNamespace(
+            size=None,
+            encoding=None,
+            download_url="https://example.invalid/raw",
+        )
+        response = MagicMock()
+        response.headers = {}
+        response.iter_content.return_value = iter(["héllo".encode("utf-8")])
+        mock_get.return_value = response
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        assert repo.get_file_content("src/small.txt", max_source_bytes=8) == "héllo"
+        assert repo.get_file_content("src/small.txt", max_source_bytes=8) == "héllo"
+        mock_get.assert_called_once()
+        response.close.assert_called_once_with()
+
+    @pytest.mark.parametrize("value", [0, -1, True, "128"])
+    def test_get_file_content_cap_requires_a_positive_integer(
+        self, mock_github_instance, mock_repo_object, value
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        with pytest.raises(ValueError, match="positive integer"):
+            repo.get_file_content("src/test.py", max_source_bytes=value)
+
     def test_bounded_text_read_preserves_legacy_lockfile_exclusion(
         self, mock_github_instance, mock_repo_object
     ):
@@ -306,6 +506,179 @@ class TestRepository:
         assert result["_retrieval_meta"]["ci_aggregate"]["outcome"] == "no_hit"
         mock_repo_object.get_commit.assert_called_once_with(sha="head-sha-123")
         assert pr.get_commits.call_count == 1
+
+    def test_get_pr_content_bounded_source_uses_api_patch_without_full_file_drift(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_github_instance.get_pr_files_with_status.return_value = RetrievalResult(
+            items=[
+                {
+                    "filename": "results/large.json",
+                    "status": "modified",
+                    "language": "JSON",
+                    "additions": 1,
+                    "deletions": 1,
+                    "changes": 2,
+                    "patch": "@@ -1 +1 @@\n-old\n+new",
+                }
+            ],
+            outcome=RetrievalOutcome.OK,
+            pages_fetched=1,
+            status_code=200,
+        )
+        mock_github_instance.get_pr_comments_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        pr = MagicMock()
+        pr.number = 9
+        pr.title = "Bound generated source reads"
+        pr.body = "No linked issue"
+        pr.user.login = "author"
+        pr.raw_data = {"author_association": "MEMBER"}
+        pr.created_at = datetime.now(timezone.utc)
+        pr.updated_at = datetime.now(timezone.utc)
+        pr.merged_at = None
+        pr.state = "open"
+        pr.base.ref = "main"
+        pr.base.sha = "base-sha"
+        pr.head.ref = "feature"
+        pr.head.sha = "head-sha"
+        pr.get_commits.return_value = []
+        pr.get_reviews.return_value = []
+        pr.get_review_comments.return_value = []
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = head_commit
+
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_file_content = MagicMock(return_value=None)
+        result = repo.get_pr_content(
+            9,
+            pr=pr,
+            source_file_max_bytes=128,
+            source_total_max_bytes=256,
+        )
+
+        assert result["file_changes"][0]["diff"] == "@@ -1 +1 @@\n-old\n+new"
+        assert repo.get_file_content.call_args_list == [
+            call(file_path="results/large.json", sha="base-sha", max_source_bytes=128),
+            call(file_path="results/large.json", sha="head-sha", max_source_bytes=128),
+        ]
+        assert result["_retrieval_meta"]["file_content_budget"] == {
+            "mode": "bounded",
+            "file_max_bytes": 128,
+            "total_max_bytes": 256,
+            "attempted_reads": 2,
+            "retained_reads": 0,
+            "retained_source_bytes": 0,
+            "unavailable_or_oversize_reads": 2,
+            "budget_exhausted_reads": 0,
+            "api_patch_fallbacks": 1,
+            "missing_patch_fallbacks": 0,
+            "outcome": "partial",
+        }
+
+    def test_get_pr_content_bounded_source_stops_at_total_budget(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        mock_github_instance.get_pr_files_with_status.return_value = RetrievalResult(
+            items=[
+                {
+                    "filename": name,
+                    "status": "added",
+                    "language": "Text",
+                    "additions": 1,
+                    "deletions": 0,
+                    "changes": 1,
+                    "patch": f"@@ -0,0 +1 @@\n+{name}",
+                }
+                for name in ("first.txt", "second.txt")
+            ],
+            outcome=RetrievalOutcome.OK,
+            pages_fetched=1,
+            status_code=200,
+        )
+        mock_github_instance.get_pr_comments_with_status.return_value = RetrievalResult(
+            outcome=RetrievalOutcome.NO_HIT,
+            pages_fetched=1,
+            status_code=200,
+        )
+        pr = MagicMock()
+        pr.number = 10
+        pr.title = "Bound total source"
+        pr.body = "No linked issue"
+        pr.user.login = "author"
+        pr.raw_data = {"author_association": "MEMBER"}
+        pr.created_at = datetime.now(timezone.utc)
+        pr.updated_at = datetime.now(timezone.utc)
+        pr.merged_at = None
+        pr.state = "open"
+        pr.base.ref = "main"
+        pr.base.sha = "base-sha"
+        pr.head.ref = "feature"
+        pr.head.sha = "head-sha"
+        pr.get_commits.return_value = []
+        pr.get_reviews.return_value = []
+        pr.get_review_comments.return_value = []
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = head_commit
+
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo.get_file_content = MagicMock(return_value="12345678")
+        result = repo.get_pr_content(
+            10,
+            pr=pr,
+            source_file_max_bytes=8,
+            source_total_max_bytes=8,
+        )
+
+        repo.get_file_content.assert_called_once_with(
+            file_path="first.txt", sha="head-sha", max_source_bytes=8
+        )
+        budget = result["_retrieval_meta"]["file_content_budget"]
+        assert budget["retained_source_bytes"] == 8
+        assert budget["budget_exhausted_reads"] == 1
+        assert budget["api_patch_fallbacks"] == 1
+        assert result["file_changes"][1]["diff"].endswith("+second.txt")
+
+    @pytest.mark.parametrize(
+        ("file_cap", "total_cap"),
+        [(0, None), (128, 0), (None, 128)],
+    )
+    def test_get_pr_content_bounded_source_validates_caps(
+        self, mock_github_instance, mock_repo_object, file_cap, total_cap
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        with pytest.raises(ValueError):
+            repo.get_pr_content(
+                1,
+                source_file_max_bytes=file_cap,
+                source_total_max_bytes=total_cap,
+            )
+
+    def test_get_pr_content_keeps_bounded_and_legacy_cache_identities_separate(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        repo = Repository("owner/test-repo", mock_github_instance)
+        repo._prs[12] = {"mode": "legacy"}
+        repo._prs[(12, 128, 256)] = {"mode": "bounded"}
+
+        assert repo.get_pr_content(12) == {"mode": "legacy"}
+        assert repo.get_pr_content(
+            12,
+            source_file_max_bytes=128,
+            source_total_max_bytes=256,
+        ) == {"mode": "bounded"}
 
     def test_get_pr_content_preserves_statuses_when_check_runs_fail(
         self, mock_github_instance, mock_repo_object

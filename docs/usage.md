@@ -112,6 +112,24 @@ phrases. Explicit `#123` shorthand remains local.
 `_retrieval_meta` records bounded-fetch outcomes. A `partial` or `error` result is an
 unknown, not evidence that a file, comment, or match does not exist.
 
+Long-lived or memory-constrained consumers may opt into source limits without changing
+the default API:
+
+```python
+pr_content = repo.get_pr_content(
+    number=15,
+    source_file_max_bytes=128 * 1024,
+    source_total_max_bytes=16 * 1024 * 1024,
+)
+print(pr_content["_retrieval_meta"]["file_content_budget"])
+```
+
+Each base/head read is bounded before decode and during raw streaming. When bounded
+source cannot be retained, the method uses GitHub's changed-file patch; if GitHub did
+not provide one, it records an explicit skipped diff. The metadata contains only
+limits and counts, not source content. Bounded and legacy calls have separate cache
+identities.
+
 To refresh CI evidence later without refetching the whole pull request:
 
 ```python
