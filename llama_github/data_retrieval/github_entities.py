@@ -410,18 +410,37 @@ class Repository:
         fetch: Callable[[], Any],
         max_items: int,
     ) -> RetrievalResult:
-        """Preserve items already fetched when a paginated PyGithub call fails."""
+        """Preserve bounded items and page truth when a GitHub call fails."""
         if max_items <= 0:
             raise ValueError("max_items must be positive")
 
         values = []
+        pages_fetched = 0
         try:
-            iterator = iter(fetch())
-            for _ in range(max_items + 1):
-                try:
-                    values.append(next(iterator))
-                except StopIteration:
-                    break
+            result = fetch()
+            get_page = getattr(result, "get_page", None)
+            if callable(get_page):
+                page_index = 0
+                while len(values) <= max_items:
+                    page = list(get_page(page_index))
+                    pages_fetched += 1
+                    if not page:
+                        break
+                    remaining = max_items + 1 - len(values)
+                    values.extend(page[:remaining])
+                    if len(values) > max_items:
+                        break
+                    page_index += 1
+            else:
+                # Plain lists and legacy iterators have no page boundary to
+                # expose. Treat the single bounded traversal as one page.
+                pages_fetched = 1
+                iterator = iter(result)
+                for _ in range(max_items + 1):
+                    try:
+                        values.append(next(iterator))
+                    except StopIteration:
+                        break
         except Exception as exc:
             retained = values[:max_items]
             return RetrievalResult(
@@ -431,7 +450,10 @@ class Repository:
                     if retained
                     else RetrievalOutcome.ERROR
                 ),
-                truncated=bool(retained),
+                pages_fetched=pages_fetched,
+                # A transport failure makes the result incomplete, but it
+                # does not prove the configured item bound was exceeded.
+                truncated=len(values) > max_items,
                 status_code=getattr(exc, "status", None),
                 error_type=type(exc).__name__,
             )
@@ -445,8 +467,95 @@ class Repository:
                 if truncated
                 else (RetrievalOutcome.OK if retained else RetrievalOutcome.NO_HIT)
             ),
+            pages_fetched=pages_fetched,
             truncated=truncated,
         )
+
+    @staticmethod
+    def _ci_scalar(value: Any) -> Any:
+        """Return only stable JSON scalars from optional PyGithub fields."""
+        return (
+            value
+            if isinstance(value, (str, int)) and not isinstance(value, bool)
+            else None
+        )
+
+    def _check_run_payload(self, check_run: Any) -> dict:
+        """Project a check run with enough identity for honest reconciliation."""
+        app = getattr(check_run, "app", None)
+        check_suite = getattr(check_run, "check_suite", None)
+        started_at = getattr(check_run, "started_at", None)
+        completed_at = getattr(check_run, "completed_at", None)
+        return {
+            "id": self._ci_scalar(getattr(check_run, "id", None)),
+            "name": getattr(check_run, "name", None),
+            "status": getattr(check_run, "status", None),
+            "conclusion": getattr(check_run, "conclusion", None),
+            "started_at": self.to_isoformat(started_at) if started_at else None,
+            "completed_at": (
+                self.to_isoformat(completed_at) if completed_at else None
+            ),
+            # Keep the historical field bound to the GitHub check-run page.
+            "details_url": self._ci_scalar(getattr(check_run, "html_url", None)),
+            "external_details_url": self._ci_scalar(
+                getattr(check_run, "details_url", None)
+            ),
+            "external_id": self._ci_scalar(getattr(check_run, "external_id", None)),
+            "app_id": self._ci_scalar(getattr(app, "id", None)),
+            "app_slug": self._ci_scalar(getattr(app, "slug", None)),
+            "check_suite_id": self._ci_scalar(getattr(check_suite, "id", None)),
+        }
+
+    @staticmethod
+    def _check_run_identity(check_run: dict) -> Optional[tuple]:
+        """Identify attempts within one suite without merging other workflows/apps."""
+        suite_id = check_run.get("check_suite_id")
+        if suite_id is None:
+            return None
+        return (
+            check_run.get("app_id") or check_run.get("app_slug"),
+            suite_id,
+            str(check_run.get("name") or "unknown"),
+        )
+
+    @staticmethod
+    def _check_run_recency(check_run: dict) -> tuple:
+        """Order attempts so a newer in-progress run supersedes stale completion."""
+        def sequence(value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return -1
+
+        return (
+            str(check_run.get("started_at") or check_run.get("completed_at") or ""),
+            str(check_run.get("completed_at") or ""),
+            sequence(check_run.get("id")),
+        )
+
+    @classmethod
+    def _current_check_runs(cls, check_runs: list[dict]) -> list[dict]:
+        """Keep the latest run per app/suite/name and preserve distinct identities."""
+        current: dict[tuple, dict] = {}
+        ordered: list[tuple[Optional[tuple], Optional[dict]]] = []
+        for check_run in check_runs:
+            identity = cls._check_run_identity(check_run)
+            if identity is None:
+                # Without a suite identity, collapsing equal names could hide
+                # distinct workflows. Preserve the evidence instead.
+                ordered.append((None, check_run))
+                continue
+            existing = current.get(identity)
+            if existing is None:
+                ordered.append((identity, None))
+            if existing is None or cls._check_run_recency(
+                check_run
+            ) >= cls._check_run_recency(existing):
+                current[identity] = check_run
+        return [
+            check_run if identity is None else current[identity]
+            for identity, check_run in ordered
+        ]
 
     @staticmethod
     def _aggregate_retrieval_outcome(
@@ -504,7 +613,7 @@ class Repository:
             max_statuses,
         )
         check_runs_result = self._bounded_github_call(
-            head_commit.get_check_runs,
+            lambda: head_commit.get_check_runs(filter="latest"),
             max_check_runs,
         )
         statuses = [
@@ -530,25 +639,12 @@ class Repository:
             ):
                 current_statuses[context] = status
         statuses = list(current_statuses.values())
-        check_runs = [
-            {
-                "name": check_run.name,
-                "status": check_run.status,
-                "conclusion": check_run.conclusion,
-                "started_at": (
-                    self.to_isoformat(check_run.started_at)
-                    if check_run.started_at
-                    else None
-                ),
-                "completed_at": (
-                    self.to_isoformat(check_run.completed_at)
-                    if check_run.completed_at
-                    else None
-                ),
-                "details_url": check_run.html_url,
-            }
-            for check_run in check_runs_result.items
-        ]
+        check_runs = self._current_check_runs(
+            [
+                self._check_run_payload(check_run)
+                for check_run in check_runs_result.items
+            ]
+        )
         status_states = {
             str(status.get("state") or "").strip().lower()
             for status in statuses
