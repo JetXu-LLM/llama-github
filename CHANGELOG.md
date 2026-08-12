@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Removed the synthetic space after unified diff addition/deletion markers so new-file column-zero content and real indentation remain distinguishable from tool decoration
+- Raised the `aiohttp` security floor to `3.14.3`
 
 ## [0.4.5] - 2026-07-20
 
