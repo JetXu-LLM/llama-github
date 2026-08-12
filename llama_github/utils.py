@@ -73,10 +73,10 @@ class DiffGenerator:
             return ""  # Both contents are None, no diff to generate
         elif base_content is None:
             # File is newly added
-            return "".join(f"+ {line}\n" for line in head_content.splitlines())
+            return "".join(f"+{line}\n" for line in head_content.splitlines())
         elif head_content is None:
             # File is deleted
-            return "".join(f"- {line}\n" for line in base_content.splitlines())
+            return "".join(f"-{line}\n" for line in base_content.splitlines())
 
         # Use empty strings for None content to ensure difflib handles them correctly
         # as file additions or deletions. This is more robust and aligns with difflib's expectations.

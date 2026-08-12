@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-08-13
+
+### Changed
+- Requested GitHub's latest check-run view, retained stable run/app/suite identities, and reconciled obsolete attempts without merging equal check names from distinct suites or apps
+- Added page counts and honest truncation/error metadata to bounded status and check-run retrieval while retaining already observed evidence when a later page or CI surface fails
+
+### Fixed
+- Removed the synthetic space after unified diff addition/deletion markers so new-file column-zero content and real indentation remain distinguishable from tool decoration
+- Raised the `aiohttp` security floor to `3.14.3`
+
 ## [0.4.5] - 2026-07-20
 
 ### Added

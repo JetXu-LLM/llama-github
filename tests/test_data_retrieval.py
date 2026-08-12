@@ -933,6 +933,308 @@ class TestRepository:
         assert snapshot.statuses_meta["item_count"] == 2
         assert snapshot.retrieval_meta["ci_statuses"]["current_item_count"] == 1
 
+    @pytest.mark.parametrize(
+        ("old_conclusion", "latest_conclusion"),
+        [("failure", "success"), ("success", "failure")],
+    )
+    def test_ci_status_helper_requests_latest_check_runs_and_reconciles_attempts(
+        self,
+        mock_github_instance,
+        mock_repo_object,
+        old_conclusion,
+        latest_conclusion,
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+
+        def check_run(
+            *,
+            run_id,
+            suite_id,
+            app_id,
+            app_slug,
+            name="verify",
+            status="completed",
+            conclusion="success",
+            started_at,
+        ):
+            return SimpleNamespace(
+                id=run_id,
+                name=name,
+                status=status,
+                conclusion=conclusion,
+                started_at=started_at,
+                completed_at=started_at,
+                html_url=f"https://github.com/checks/{run_id}",
+                details_url=f"https://ci.example.invalid/{run_id}",
+                external_id=f"external-{run_id}",
+                app=SimpleNamespace(id=app_id, slug=app_slug),
+                check_suite=SimpleNamespace(id=suite_id),
+            )
+
+        old_failure = check_run(
+            run_id=10,
+            suite_id=100,
+            app_id=1,
+            app_slug="github-actions",
+            conclusion=old_conclusion,
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        latest_success = check_run(
+            run_id=11,
+            suite_id=100,
+            app_id=1,
+            app_slug="github-actions",
+            conclusion=latest_conclusion,
+            started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        same_name_distinct_workflow = check_run(
+            run_id=20,
+            suite_id=200,
+            app_id=1,
+            app_slug="github-actions",
+            conclusion="failure",
+            started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        same_name_distinct_app = check_run(
+            run_id=30,
+            suite_id=300,
+            app_id=2,
+            app_slug="third-party-ci",
+            conclusion="neutral",
+            started_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = [
+            old_failure,
+            latest_success,
+            same_name_distinct_workflow,
+            same_name_distinct_app,
+        ]
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha")
+
+        head_commit.get_check_runs.assert_called_once_with(filter="latest")
+        assert [item["id"] for item in snapshot.check_runs] == [11, 20, 30]
+        assert snapshot.check_runs[0] == {
+            "id": 11,
+            "name": "verify",
+            "status": "completed",
+            "conclusion": latest_conclusion,
+            "started_at": "2026-01-02T00:00:00Z",
+            "completed_at": "2026-01-02T00:00:00Z",
+            "details_url": "https://github.com/checks/11",
+            "external_details_url": "https://ci.example.invalid/11",
+            "external_id": "external-11",
+            "app_id": 1,
+            "app_slug": "github-actions",
+            "check_suite_id": 100,
+        }
+        assert snapshot.check_runs_meta["item_count"] == 4
+        assert snapshot.retrieval_meta["ci_check_runs"]["current_item_count"] == 3
+
+    @pytest.mark.parametrize(
+        ("status", "conclusion"),
+        [
+            ("in_progress", None),
+            ("completed", "failure"),
+            ("completed", "cancelled"),
+            ("completed", "skipped"),
+            ("completed", "neutral"),
+            ("completed", "action_required"),
+            ("completed", "success"),
+        ],
+    )
+    def test_ci_status_helper_preserves_check_run_states(
+        self, mock_github_instance, mock_repo_object, status, conclusion
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        run = SimpleNamespace(
+            id=1,
+            name="policy",
+            status=status,
+            conclusion=conclusion,
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            completed_at=None,
+            html_url="https://github.com/checks/1",
+            details_url="https://ci.example.invalid/1",
+            external_id="external-1",
+            app=SimpleNamespace(id=1, slug="policy-app"),
+            check_suite=SimpleNamespace(id=1),
+        )
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = [run]
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha")
+
+        assert snapshot.check_runs[0]["status"] == status
+        assert snapshot.check_runs[0]["conclusion"] == conclusion
+
+    def test_ci_status_helper_records_multi_page_bound_and_truncation(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+
+        class PagedRuns:
+            def __init__(self, values, page_size=30):
+                self.values = values
+                self.page_size = page_size
+
+            def get_page(self, page_index):
+                start = page_index * self.page_size
+                return self.values[start : start + self.page_size]
+
+            def __iter__(self):
+                return iter(self.values)
+
+        runs = []
+        for index in range(101):
+            runs.append(
+                SimpleNamespace(
+                    id=index,
+                    name=f"check-{index}",
+                    status="completed",
+                    conclusion="failure" if index == 0 else "success",
+                    started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    completed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    html_url=f"https://github.com/checks/{index}",
+                    details_url=None,
+                    external_id=None,
+                    app=SimpleNamespace(id=1, slug="github-actions"),
+                    check_suite=SimpleNamespace(id=index),
+                )
+            )
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = PagedRuns(runs)
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha", max_check_runs=100)
+
+        assert len(snapshot.check_runs) == 100
+        assert snapshot.check_runs[0]["conclusion"] == "failure"
+        assert snapshot.outcome is RetrievalOutcome.PARTIAL
+        assert snapshot.check_runs_meta == {
+            "outcome": "partial",
+            "item_count": 100,
+            "pages_fetched": 4,
+            "truncated": True,
+            "status_code": None,
+            "error_type": None,
+        }
+
+    def test_ci_status_helper_retains_first_pages_when_later_page_fails(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        failed_run = SimpleNamespace(
+            id=1,
+            name="verify",
+            status="completed",
+            conclusion="failure",
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            completed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            html_url="https://github.com/checks/1",
+            details_url=None,
+            external_id=None,
+            app=SimpleNamespace(id=1, slug="github-actions"),
+            check_suite=SimpleNamespace(id=1),
+        )
+
+        class FailingSecondPage:
+            def get_page(self, page_index):
+                if page_index == 0:
+                    return [failed_run]
+                raise GithubException(503, {"message": "page unavailable"})
+
+            def __iter__(self):
+                yield failed_run
+                raise GithubException(503, {"message": "page unavailable"})
+
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = []
+        head_commit.get_check_runs.return_value = FailingSecondPage()
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha")
+
+        assert snapshot.check_runs[0]["conclusion"] == "failure"
+        assert snapshot.outcome is RetrievalOutcome.PARTIAL
+        assert snapshot.check_runs_meta == {
+            "outcome": "partial",
+            "item_count": 1,
+            "pages_fetched": 1,
+            "truncated": False,
+            "status_code": 503,
+            "error_type": "GithubException",
+        }
+
+    def test_ci_status_helper_retains_statuses_when_checks_permission_is_denied(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        failed_status = SimpleNamespace(
+            context="verify",
+            state="failure",
+            description="dependency mirror unavailable",
+            target_url="https://ci.example.invalid/status/1",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = [failed_status]
+        head_commit.get_check_runs.side_effect = GithubException(
+            403,
+            {"message": "Resource not accessible by integration"},
+        )
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha")
+
+        assert snapshot.statuses[0]["state"] == "failure"
+        assert snapshot.check_runs == []
+        assert snapshot.outcome is RetrievalOutcome.PARTIAL
+        assert snapshot.statuses_meta["outcome"] == "ok"
+        assert snapshot.check_runs_meta["outcome"] == "error"
+        assert snapshot.check_runs_meta["status_code"] == 403
+
+    def test_ci_status_helper_marks_more_than_one_hundred_statuses_partial(
+        self, mock_github_instance, mock_repo_object
+    ):
+        mock_github_instance.get_repo.return_value = mock_repo_object
+        statuses = [
+            SimpleNamespace(
+                context=f"status-{index}",
+                state="failure" if index == 0 else "success",
+                description="quota exceeded" if index == 0 else "passed",
+                target_url=f"https://ci.example.invalid/status/{index}",
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+            for index in range(101)
+        ]
+        head_commit = MagicMock()
+        head_commit.get_statuses.return_value = statuses
+        head_commit.get_check_runs.return_value = []
+        mock_repo_object.get_commit.return_value = head_commit
+        repo = Repository("owner/test-repo", mock_github_instance)
+
+        snapshot = repo.get_ci_status_with_status("head-sha", max_statuses=100)
+
+        assert len(snapshot.statuses) == 100
+        assert snapshot.statuses[0]["state"] == "failure"
+        assert snapshot.outcome is RetrievalOutcome.PARTIAL
+        assert snapshot.statuses_meta["truncated"] is True
+        assert snapshot.statuses_meta["pages_fetched"] == 1
+
     def test_related_issue_collection_makes_no_calls_for_zero_references(
         self, mock_github_instance, mock_repo_object
     ):

@@ -13,13 +13,34 @@ class TestDiffGenerator:
         base = None
         head = "new line"
         diff = DiffGenerator.generate_custom_diff(base, head, context_lines=1)
-        assert "+ new line" in diff
+        assert diff == "+new line\n"
+
+    def test_generate_custom_diff_new_file_preserves_column_zero_and_indentation(self):
+        diff = DiffGenerator.generate_custom_diff(
+            None,
+            "---\nlayout: post\n  indented: true\n",
+            context_lines=1,
+        )
+
+        assert diff == "+---\n+layout: post\n+  indented: true\n"
 
     def test_generate_custom_diff_deleted_file(self):
         base = "old line"
         head = None
         diff = DiffGenerator.generate_custom_diff(base, head, context_lines=1)
-        assert "- old line" in diff
+        assert diff == "-old line\n"
+
+    def test_generate_custom_diff_modified_file_keeps_standard_context_markers(self):
+        diff = DiffGenerator.generate_custom_diff(
+            "before\nold\nafter",
+            "before\n  new\nafter",
+            context_lines=1,
+        )
+
+        assert " before" in diff
+        assert "-old" in diff
+        assert "+  new" in diff
+        assert " after" in diff
 
     def test_find_context_python(self):
         lines = [
